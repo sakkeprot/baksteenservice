@@ -1,0 +1,16 @@
+[Unit]
+Description=Baksteenservice SMS automation service
+After=network.target
+
+[Service]
+Type=simple
+User=sander
+WorkingDirectory=/home/sander/baksteenservice
+ExecStart=/home/sander/baksteenservice/venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
