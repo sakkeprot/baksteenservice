@@ -8,12 +8,6 @@
 | `janee <question>` | `janee is kip lekkerder dan rund` | `Ja` or `Nee` |
 | `trein <dep> <arr> [time]` | `trein leuven brussel 17` | Train info |
 
-## API key setup
-Edit `secrets.py`:
-```python
-DEEPSEEK_API_KEY = "sk-your-real-key-here"
-```
-`secrets.py` is in `.gitignore` — never commit it.
 
 ## Dev mode
 ```bash
