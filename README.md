@@ -11,15 +11,8 @@
 | `weer <stad>` | `weer leuven` | Temp, beschrijving, wind |
 | `nieuws` | `nieuws` | Top 3 VRT NWS koppen |
 | `vertaling <taal> <tekst>` | `vertaling en fiets` | `fiets → bicycle` |
-| `definitie <woord>` | `definitie serendipiteit` | Woordenboekdefinitie |
 | `apotheker <postcode>` | `apotheker 3000` | Wachtapotheek naam + tel |
 
-## API Keys — secrets.py
-```python
-DEEPSEEK_API_KEY = "sk-..."    # https://platform.deepseek.com/
-ORS_API_KEY      = "ors-..."   # https://openrouteservice.org/dev/#/home
-OWM_API_KEY      = "owm-..."   # https://openweathermap.org/api (free, 1000/day)
-```
 
 ## Dev mode
 ```bash
