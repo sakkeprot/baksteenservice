@@ -1,90 +1,108 @@
 """baksteenservice - action.py"""
-import logging
+
+import html, logging, re, xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
+from bs4 import BeautifulSoup
 from openai import OpenAI
 import secrets as _secrets
+import config
 
 logger = logging.getLogger("baksteenservice.action")
 
-MAX_SMS_LENGTH   = 306
 IRAIL_BASE       = "https://api.irail.be"
-IRAIL_USER_AGENT = "baksteenservice/1.0 (github.com/sander/baksteenservice)"
-IRAIL_RESULTS    = 6   # fetch 6, display first 3
+IRAIL_USER_AGENT = "baksteenservice/1.0 (github.com/sakke111/baksteenservice)"
+IRAIL_RESULTS    = 6
+
+ORS_BASE    = "https://api.openrouteservice.org"
+ORS_HEADERS = {"Authorization": _secrets.ORS_API_KEY, "Content-Type": "application/json", "User-Agent": IRAIL_USER_AGENT}
 
 
-def _truncate(text: str, max_len: int = MAX_SMS_LENGTH) -> str:
-    if len(text) <= max_len:
-        return text
+NEWS_FEEDS = [
+    "https://www.hln.be/rss.xml",
+    "https://www.vrt.be/vrtnws/nl.rss.articles.xml",
+    "https://www.demorgen.be/rss.xml",
+]
+
+_SKIP_TEXT = {"cookie", "essentieel", "verplicht", "privac", "javascript",
+              "openingsuren", "meer info", "toon", "©", "zoek"}
+
+_ADDRESS_RE = re.compile(r'.+\d+.*\d{4}\s+\w+', re.IGNORECASE)
+
+_WX_ICON = {
+    "clear sky": "☀️", "few clouds": "🌤", "scattered clouds": "⛅",
+    "broken clouds": "☁️", "overcast clouds": "☁️",
+    "light rain": "🌦", "moderate rain": "🌧", "heavy intensity rain": "🌧",
+    "thunderstorm": "⛈", "snow": "❄️", "mist": "🌫", "fog": "🌫",
+    "drizzle": "🌦", "shower rain": "🌧",
+}
+
+
+def _truncate(text: str, max_len: int = config.ROUTE_MAX_LENGTH) -> str:
+    if len(text) <= max_len: return text
     return text[: max_len - 1] + "…"
 
 
+def _dist(metres: float) -> str:
+    if metres < 1000: return f"{int(round(metres))}m"
+    return f"{metres/1000:.1f}km".rstrip("0").rstrip(".")
+
+
 def _ts(unix, delay_sec=0) -> str:
-    """
-    Unix timestamp → "HH:MM" with optional delay suffix.
-    _ts(t, 180)  →  "12:03 +3'"
-    _ts(t, 0)    →  "12:03"
-    """
     t = datetime.fromtimestamp(int(unix)).strftime("%H:%M")
-    delay = int(delay_sec)
-    if delay > 0:
-        t += f" +{delay // 60}'"
+    d = int(delay_sec)
+    if d > 0: t += f" +{d//60}\'"
     return t
 
 
 def _plat(leg: dict) -> str:
-    """Return ' per.X' when platform is known, else empty string."""
     name = leg.get("platforminfo", {}).get("name", "").strip()
     return f" per.{name}" if name else ""
 
 
-def _fmt(conn: dict) -> str:
-    """
-    Format one iRail connection.
-
-    No delay, direct:
-      12:03 Leuven per.12 -> 13:01 Brussel-Centraal per.2
-
-    With delay on departure:
-      12:03 +3' Leuven per.12 -> 13:01 Brussel-Centraal per.2
-
-    With via + delays:
-      12:07 +2' Leuven per.13 -> 12:30 Brussel-Noord per.1 | per.4 12:35 +5' -> 12:59 Brussel-Centraal per.6
-    """
-    dep  = conn["departure"]
-    arr  = conn["arrival"]
-    vias = conn.get("vias", {})
-
+def _fmt_train(conn: dict) -> str:
+    dep = conn["departure"]; arr = conn["arrival"]; vias = conn.get("vias", {})
     dep_time = _ts(dep["time"], dep.get("delay", 0))
     dep_name = dep.get("stationinfo", {}).get("standardname", dep.get("station", "?"))
-    dep_plat = _plat(dep)
-
     arr_time = _ts(arr["time"], arr.get("delay", 0))
     arr_name = arr.get("stationinfo", {}).get("standardname", arr.get("station", "?"))
-    arr_plat = _plat(arr)
-
     if not vias or int(vias.get("number", 0)) == 0:
-        return f"{dep_time} {dep_name}{dep_plat} -> {arr_time} {arr_name}{arr_plat}"
-
+        return f"{dep_time} {dep_name}{_plat(dep)} -> {arr_time} {arr_name}{_plat(arr)}"
     via_list = vias["via"]
-    if isinstance(via_list, dict):
-        via_list = [via_list]
-
-    parts = [f"{dep_time} {dep_name}{dep_plat}"]
+    if isinstance(via_list, dict): via_list = [via_list]
+    parts = [f"{dep_time} {dep_name}{_plat(dep)}"]
     for via in via_list:
-        v_arr      = via["arrival"]
-        v_dep      = via["departure"]
-        v_name     = via.get("stationinfo", {}).get("standardname", via.get("station", "?"))
-        v_arr_time = _ts(v_arr["time"], v_arr.get("delay", 0))
-        v_dep_time = _ts(v_dep["time"], v_dep.get("delay", 0))
-        v_arr_plat = _plat(v_arr)
-        v_dep_plat = _plat(v_dep)
-        parts.append(f"-> {v_arr_time} {v_name}{v_arr_plat} |{v_dep_plat} {v_dep_time}")
-
-    parts.append(f"-> {arr_time} {arr_name}{arr_plat}")
+        v_arr = via["arrival"]; v_dep = via["departure"]
+        v_name = via.get("stationinfo", {}).get("standardname", via.get("station", "?"))
+        parts.append(
+            f"-> {_ts(v_arr['time'], v_arr.get('delay', 0))} {v_name}{_plat(v_arr)}"
+            f" |{_plat(v_dep)} {_ts(v_dep['time'], v_dep.get('delay', 0))}"
+        )
+    parts.append(f"-> {arr_time} {arr_name}{_plat(arr)}")
     return " ".join(parts)
+
+
+def _classify_pharmacy_texts(texts: List[str]):
+    """
+    Classifies scraped text fragments from a pharmacy card into
+    (name, address, phone), skipping noise like "Openingsuren".
+    """
+    name = address = phone = None
+    for t in texts:
+        t = t.strip()
+        if not t or len(t) < 2: continue
+        if any(s in t.lower() for s in _SKIP_TEXT): continue
+        if re.match(r'^[\d\s/+]{7,15}$', t):
+            if not phone: phone = t.replace(" ", "")
+            continue
+        if _ADDRESS_RE.match(t) or re.search(r'\b\d{4}\b', t):
+            if not address: address = t
+            continue
+        if not name and len(t) > 3:
+            name = t
+    return name, address, phone
 
 
 class ActionHandler:
@@ -94,122 +112,260 @@ class ActionHandler:
             "janee":             self._action_janee,
             "trein":             self._action_trein,
             "trein_parse_error": self._action_trein_error,
+            "route":             self._action_route,
+            "route_parse_error": self._action_route_error,
+            "weer":              self._action_weer,
+            "nieuws":            self._action_nieuws,
+            "vertaling":         self._action_vertaling,
+            "vertaling_error":   self._action_vertaling_error,
+            "apotheker":         self._action_apotheker,
             "unknown":           self._action_unknown,
         }
-        self._gpt_client = OpenAI(
-            api_key=_secrets.DEEPSEEK_API_KEY,
-            base_url="https://api.deepseek.com",
-        )
+        self._gpt_client = OpenAI(api_key=_secrets.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
     def execute(self, analysis: Dict) -> Dict:
-        intent = analysis.get("intent", "unknown")
-        params = analysis.get("params", {})
-        fn     = self.ACTION_MAP.get(intent, self._action_unknown)
+        intent = analysis.get("intent", "unknown"); params = analysis.get("params", {})
+        fn = self.ACTION_MAP.get(intent, self._action_unknown)
         try:
             result = fn(params)
-            logger.info(f"Action '{intent}' → {str(result['message'])[:80]}")
+            logger.info(f"Action '{intent}' -> {str(result['message'])[:80]}")
             return result
         except Exception as e:
             logger.error(f"Action '{intent}' raised: {e}", exc_info=True)
             return {"success": False, "message": f"Fout: {e}", "data": {}}
 
-    # ------------------------------------------------------------------
-    # GPT — free-form, max 160 chars
-    # ------------------------------------------------------------------
-
-    def _action_gpt(self, params: Dict) -> Dict:
+    def _action_gpt(self, params):
         prompt = params.get("prompt", "")
         if not prompt:
             return {"success": False, "message": "Geen prompt ontvangen.", "data": {}}
-        response = self._gpt_client.chat.completions.create(
-            model="deepseek-chat",
+        r = self._gpt_client.chat.completions.create(
+            model="deepseek-chat", stream=False,
             messages=[
-                {"role": "system", "content": (
-                    "You are a concise assistant. "
-                    "Your reply will be sent as an SMS — MUST fit in 160 characters. "
-                    "Never exceed 160 characters. Be brief and direct."
-                )},
-                {"role": "user", "content": prompt},
-            ],
-            stream=False,
-        )
-        answer = _truncate(response.choices[0].message.content.strip())
-        return {"success": True, "message": answer, "data": {"prompt": prompt}}
+                {"role": "system", "content": "Concise assistant. Max 160 chars. Be brief."},
+                {"role": "user",   "content": prompt},
+            ])
+        return {"success": True, "message": _truncate(r.choices[0].message.content.strip()), "data": {}}
 
-    # ------------------------------------------------------------------
-    # JANEE — strictly "Ja" or "Nee"
-    # ------------------------------------------------------------------
-
-    def _action_janee(self, params: Dict) -> Dict:
-        question = params.get("question", "")
-        if not question:
+    def _action_janee(self, params):
+        q = params.get("question", "")
+        if not q:
             return {"success": False, "message": "Geen vraag ontvangen.", "data": {}}
-        response = self._gpt_client.chat.completions.create(
-            model="deepseek-chat",
+        r = self._gpt_client.chat.completions.create(
+            model="deepseek-chat", stream=False,
             messages=[
-                {"role": "system", "content": (
-                    "You are a yes/no oracle. "
-                    "Reply with ONLY 'Ja' or 'Nee'. No punctuation, no explanation."
-                )},
-                {"role": "user", "content": question},
-            ],
-            stream=False,
-        )
-        raw    = response.choices[0].message.content.strip()
-        answer = "Ja" if raw.lower() in ("ja", "yes", "true", "1", "j") else "Nee"
-        return {"success": True, "message": answer, "data": {"question": question, "raw": raw}}
+                {"role": "system", "content": "Reply ONLY with 'Ja' or 'Nee'. Nothing else."},
+                {"role": "user",   "content": q},
+            ])
+        raw = r.choices[0].message.content.strip()
+        return {"success": True, "message": "Ja" if raw.lower() in ("ja","yes","true","1","j") else "Nee", "data": {}}
 
-    # ------------------------------------------------------------------
-    # TREIN — iRail connections, next 3 with delay info
-    # ------------------------------------------------------------------
-
-    def _action_trein(self, params: Dict) -> Dict:
+    def _action_trein(self, params):
         dep      = params.get("departure", "")
         arr      = params.get("arrival",   "")
-        dep_time = params.get("time",      datetime.now())
-
-        date_str = dep_time.strftime("%d%m%y")
-        time_str = dep_time.strftime("%H%M")
-
-        logger.info(f"iRail: {dep} → {arr} @ {time_str} {date_str}")
-
+        dep_time = params.get("time", datetime.now())
         try:
             resp = requests.get(
-                f"{IRAIL_BASE}/connections/",
-                params={
-                    "from":            dep,
-                    "to":              arr,
-                    "date":            date_str,
-                    "time":            time_str,
-                    "timesel":         "departure",
-                    "format":          "json",
-                    "lang":            "nl",
-                    "results":         str(IRAIL_RESULTS),
-                    "typeOfTransport": "trains",
-                },
+                f"{IRAIL_BASE}/connections/", timeout=10,
                 headers={"User-Agent": IRAIL_USER_AGENT},
-                timeout=10,
-            )
+                params={
+                    "from": dep, "to": arr,
+                    "date": dep_time.strftime("%d%m%y"),
+                    "time": dep_time.strftime("%H%M"),
+                    "timesel": "departure", "format": "json", "lang": "nl",
+                    "results": str(IRAIL_RESULTS), "typeOfTransport": "trains",
+                })
             resp.raise_for_status()
         except requests.RequestException as e:
-            logger.error(f"iRail request failed: {e}")
             return {"success": False, "message": f"iRail fout: {e}", "data": {}}
+        conns = resp.json().get("connection", [])
+        if not conns:
+            return {"success": False, "message": f"Geen treinen {dep}->{arr}.", "data": {}}
+        return {"success": True, "message": _truncate("\n".join(_fmt_train(c) for c in conns[:3]), config.ROUTE_MAX_LENGTH*2), "data": {}}
 
-        connections = resp.json().get("connection", [])
-        if not connections:
-            return {"success": False, "message": f"Geen treinen gevonden van {dep} naar {arr}.", "data": {}}
-
-        lines   = [_fmt(c) for c in connections[:3]]
-        message = _truncate("\n".join(lines))
-        logger.info(f"iRail reply:\n{message}")
-        return {"success": True, "message": message, "data": {"connections": len(lines)}}
-
-    # ------------------------------------------------------------------
-    # Error / unknown
-    # ------------------------------------------------------------------
-
-    def _action_trein_error(self, params: Dict) -> Dict:
+    def _action_trein_error(self, params):
         return {"success": False, "message": "Station niet herkend. Gebruik: trein <vertrek> <aankomst> [uur]", "data": params}
 
-    def _action_unknown(self, params: Dict) -> Dict:
-        return {"success": False, "message": "Onbekend commando. Beschikbaar: gpt <tekst>, janee <vraag>, trein <vertrek> <aankomst> [uur]", "data": {}}
+    def _action_route(self, params: Dict) -> Dict:
+        origin      = params.get("origin", "")
+        destination = params.get("destination", "")
+        orig_coords = self._geocode(origin)
+        dest_coords = self._geocode(destination)
+        if orig_coords is None:
+            return {"success": False, "message": f"Adres niet gevonden: {origin}", "data": {}}
+        if dest_coords is None:
+            return {"success": False, "message": f"Adres niet gevonden: {destination}", "data": {}}
+        profile = config.ROUTE_PROFILE
+        try:
+            resp = requests.post(
+                f"{ORS_BASE}/v2/directions/{profile}/json",
+                headers=ORS_HEADERS, timeout=10,
+                json={"coordinates": [orig_coords, dest_coords],
+                      "language": "nl", "instructions": True, "units": "m"})
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            return {"success": False, "message": f"Route fout: {e}", "data": {}}
+        steps = resp.json()["routes"][0]["segments"][0]["steps"]
+        parts = [
+            f"{self._compact_instruction(s.get('instruction', ''))} ({_dist(s.get('distance', 0))})"
+            for s in steps if s.get("distance", 0) >= 5
+        ]
+        return {"success": True, "message": _truncate(", ".join(parts), config.ROUTE_MAX_LENGTH), "data": {}}
+
+    def _geocode(self, address):
+        try:
+            r = requests.get(
+                f"{ORS_BASE}/geocode/search", headers=ORS_HEADERS, timeout=10,
+                params={"text": address, "boundary.country": "BE", "size": 1, "lang": "nl"})
+            r.raise_for_status()
+            feats = r.json().get("features", [])
+            return feats[0]["geometry"]["coordinates"] if feats else None
+        except requests.RequestException as e:
+            logger.error(f"Geocode error: {e}"); return None
+
+    def _compact_instruction(self, instruction):
+        i = re.sub(r"^(Rij|Sla)\s+", "", instruction.strip(), flags=re.IGNORECASE)
+        i = re.sub(r"\s+(af op|op|in)\s+", " ", i, flags=re.IGNORECASE)
+        return i[:1].upper() + i[1:] if i else instruction
+
+    def _action_route_error(self, params):
+        return {"success": False, "message": "Gebruik: route <van adres> NAAR <naar adres>", "data": params}
+
+    def _action_weer(self, params: Dict) -> Dict:
+        city = params.get("city", "")
+        if not city:
+            return {"success": False, "message": "Gebruik: weer <stad>", "data": {}}
+        try:
+            r = requests.get(
+                "http://api.weatherapi.com/v1/forecast.json",
+                timeout=10,
+                params={
+                    "key":    _secrets.OWM_API_KEY,
+                    "q":      city,
+                    "days":   1,
+                    "lang":   "nl",
+                    "aqi":    "no",
+                    "alerts": "no",
+                })
+            r.raise_for_status()
+        except requests.RequestException as e:
+            return {"success": False, "message": f"Weer fout: {e}", "data": {}}
+
+        d        = r.json()
+        name     = d["location"]["name"]
+        now_hour = datetime.now().hour
+
+        # Pick next 4 hours from the hourly forecast
+        hours = d["forecast"]["forecastday"][0]["hour"]
+        upcoming = [h for h in hours if int(h["time"].split(" ")[1].split(":")[0]) >= now_hour][:4]
+
+        if not upcoming:
+            return {"success": False, "message": "Geen uurlijkse data beschikbaar.", "data": {}}
+
+        lines = [name]
+        for h in upcoming:
+            t     = h["time"].split(" ")[1][:5]          # "14:00"
+            temp  = round(h["temp_c"])
+            desc  = h["condition"]["text"]
+            wind  = round(h["wind_kph"])
+            rain  = h.get("chance_of_rain", 0)
+            icon  = _WX_ICON.get(desc.lower(), "")
+            lines.append(f"{t} {temp}°C {desc}, wind: {wind}km/h, regen: {rain}%")
+
+        return {"success": True, "message": _truncate("\n".join(lines), config.ROUTE_MAX_LENGTH), "data": {}}
+
+    
+    def _action_nieuws(self, params: Dict) -> Dict:
+        for feed_url in NEWS_FEEDS:
+            try:
+                r = requests.get(feed_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code != 200 or not r.content:
+                    continue
+                root  = ET.fromstring(r.content)
+                items = root.findall(".//item")[:3]
+                if not items:
+                    continue
+                lines = []
+                for item in items:
+                    title = html.unescape(item.findtext("title", "").strip())
+                    if len(title) > 50: title = title[:49] + "\u2026"
+                    lines.append(title)
+                msg = "\n".join(f"{i+1}. {t}" for i, t in enumerate(lines))
+                return {"success": True, "message": _truncate(msg), "data": {}}
+            except Exception as e:
+                logger.warning(f"RSS {feed_url} failed: {e}")
+                continue
+        return {"success": False, "message": "Nieuws tijdelijk niet beschikbaar.", "data": {}}
+
+    def _action_vertaling(self, params: Dict) -> Dict:
+        lang = params.get("lang", "en")
+        text = params.get("text", "")
+        if not text:
+            return {"success": False, "message": "Geen tekst om te vertalen.", "data": {}}
+        lang_names = {
+            "en": "English", "fr": "French",     "de": "German",     "es": "Spanish",
+            "nl": "Dutch",   "it": "Italian",     "pt": "Portuguese", "pl": "Polish",
+            "tr": "Turkish", "ar": "Arabic",      "zh": "Chinese",    "ru": "Russian",
+        }
+        lang_full = lang_names.get(lang.lower(), lang)
+        r = self._gpt_client.chat.completions.create(
+            model="deepseek-chat", stream=False,
+            messages=[
+                {"role": "system", "content": f"Translate to {lang_full}. Return ONLY the translation."},
+                {"role": "user",   "content": text},
+            ])
+        translation = r.choices[0].message.content.strip()
+        return {"success": True, "message": _truncate(f"{text} \u2192 {translation}"), "data": {}}
+
+    def _action_vertaling_error(self, params):
+        return {"success": False, "message": "Gebruik: vertaling <taal> <tekst>   bv. vertaling en fiets", "data": params}
+
+    def _action_apotheker(self, params: Dict) -> Dict:
+        import json
+        query = params.get("postcode", "").strip()
+        if not query:
+            return {"success": False, "message": "Gebruik: apotheker <postcode of stad>", "data": {}}
+        try:
+            r = requests.get(
+                "https://www.apotheek.be/PharmacySearch",
+                params={"OnDutyTouched": "true", "Query": query, "OnDuty": "true"},
+                headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "nl-BE"},
+                timeout=10,
+            )
+            r.raise_for_status()
+        except requests.RequestException as e:
+            return {"success": False, "message": f"Apotheek fout: {e}", "data": {}}
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        results: List[str] = []
+
+        for card in soup.select(".pharmacy-accordion-card[data-pharmacy]"):
+            raw = card.get("data-pharmacy", "")
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            if not data.get("OnDuty", False):
+                continue
+
+            name    = data.get("Name",    "").strip()
+            address = data.get("Address", "").strip()
+            phone   = data.get("Phone",   "").strip()
+
+            line_parts = [p for p in [name, address, phone] if p]
+            if line_parts:
+                results.append("\n".join(line_parts))
+
+            if len(results) >= 2:
+                break
+
+        if results:
+            return {"success": True, "message": _truncate("\n---\n".join(results), 400), "data": {}}
+
+        return {"success": False, "message": f"Geen wachtapotheek gevonden voor {query}.", "data": {}}
+
+    def _action_unknown(self, params):
+        cmds = "trein, route, weer, apotheker, gpt, janee, nieuws, vertaling"
+        return {"success": False, "message": f"Onbekend commando. Gebruik: {cmds}", "data": {}}

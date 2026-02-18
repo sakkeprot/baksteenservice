@@ -1,6 +1,6 @@
-"""baksteenservice - listener.py — DEV_MODE=True: terminal | False: SIM800C"""
+"""baksteenservice - listener.py"""
 import logging, threading, time
-from typing import Dict, List, Optional
+from typing import Dict, List
 import config
 
 logger = logging.getLogger("baksteenservice.listener")

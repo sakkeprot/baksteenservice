@@ -1,4 +1,4 @@
-"""baksteenservice - returner.py — DEV_MODE=True: terminal | False: SIM800C"""
+"""baksteenservice - returner.py"""
 import logging, time
 from typing import Dict
 import config
@@ -19,10 +19,8 @@ class SMSReturner:
     def send(self, recipient, text):
         if config.DEV_MODE:
             print(f"  ┌─ Reply to {recipient}")
-            for line in text.splitlines():
-                print(f"  │  {line}")
-            print(f"  └─ ({len(text)} chars)")
-            print()
+            for line in text.splitlines(): print(f"  │  {line}")
+            print(f"  └─ ({len(text)} chars)"); print()
         else:
             self._send_sms(recipient, text)
 
