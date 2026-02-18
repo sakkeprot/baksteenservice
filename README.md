@@ -11,7 +11,7 @@
 | `weer <stad>` | `weer leuven` | Temp, beschrijving, wind |
 | `nieuws` | `nieuws` | Top 3 VRT NWS koppen |
 | `vertaling <taal> <tekst>` | `vertaling en fiets` | `fiets → bicycle` |
-| `apotheker <postcode>` | `apotheker 3000` | Wachtapotheek naam + tel |
+| `apotheker <postcode>` | `apotheker 3000` | Wachtapotheek adres + tel |
 
 
 ## Dev mode
