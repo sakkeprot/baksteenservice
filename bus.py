@@ -1,7 +1,7 @@
 """baksteenservice - bus.py
 De Lijn routeplanner via Open Data API.
-Exporteert: vind_route(van, naar, max_routes) -> dict
-            vind_halte(naam)                  -> dict
+Exporteert: vind_route(van, naar, max_routes, vanaf) -> dict
+            vind_halte(naam)                          -> dict
 Beide returnen {"ok": bool, "msg": str}
 """
 
@@ -24,7 +24,7 @@ _HDR  = {
 }
 
 
-# ── lage-level ────────────────────────────────────────────────────────────────
+# ── lage-level ────────────────────────────────────────────────────────────────────────────
 
 def _api_get(url: str, params: dict = None) -> Optional[dict]:
     try:
@@ -96,7 +96,7 @@ def _get_doorkomsten(e: str, n: str, label: str) -> List[dict]:
     return dcs
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────────────────────
 
 def _parse_dt(ts: str) -> Optional[datetime]:
     if not ts:
@@ -109,11 +109,8 @@ def _parse_dt(ts: str) -> Optional[datetime]:
     return None
 
 
-def _fmt_dc(d: dict, prefix: str = "  ") -> str:
-    lijn = d.get("lijnnummer", "?")
-    best = d.get("bestemming", d.get("bestemmingKort", "?"))
-    gep  = _parse_dt(d.get("dienstregelingTijdstip", ""))
-    rt   = _parse_dt(d.get("real-timeTijdstip", ""))
+def _fmt_tijd(gep: Optional[datetime], rt: Optional[datetime]) -> str:
+    """Formatteer tijd met optionele vertraging in minuten."""
     if gep:
         tijd = gep.strftime("%H:%M")
         if rt and rt != gep:
@@ -122,34 +119,45 @@ def _fmt_dc(d: dict, prefix: str = "  ") -> str:
                 tijd += " %+d'" % diff
     else:
         tijd = "??:??"
-    return "%s%s lijn %s -> %s" % (prefix, tijd, lijn, best)
+    return tijd
 
 
-# ── publieke functies ─────────────────────────────────────────────────────────
+def _fmt_dc(d: dict, prefix: str = "  ") -> str:
+    lijn = d.get("lijnnummer", "?")
+    best = d.get("bestemming", d.get("bestemmingKort", "?"))
+    gep  = _parse_dt(d.get("dienstregelingTijdstip", ""))
+    rt   = _parse_dt(d.get("real-timeTijdstip", ""))
+    return "%s%s lijn %s -> %s" % (prefix, _fmt_tijd(gep, rt), lijn, best)
 
-def vind_route(van_naam: str, naar_naam: str, max_routes: int = 3) -> dict:
+
+# ── publieke functies ──────────────────────────────────────────────────────────────────
+
+def vind_route(van_naam: str, naar_naam: str, max_routes: int = 3,
+               vanaf: datetime = None) -> dict:
     """
     Zoekt eerstvolgende max_routes vertrekken van van_naam naar naar_naam.
+    vanaf: filter op vertrekken >= dit tijdstip (None = now).
 
     Strategie (2 passes):
-      Pass 1 — lijnrichtingen: snel, maar API is soms onvolledig
-      Pass 2 — realtime scan: vangt perrons die pass 1 mist
-                               (bv. tijdelijke omleidingen, API-gaps)
+      Pass 1 - lijnrichtingen: snel, maar API is soms onvolledig
+      Pass 2 - realtime scan:  vangt perrons die pass 1 mist
+                                (bv. tijdelijke omleidingen, API-gaps)
     """
-    log.info("Route: '%s' -> '%s'", van_naam, naar_naam)
+    nu = vanaf or datetime.now().replace(second=0, microsecond=0)
+    log.info("Route: '%s' -> '%s' vanaf %s", van_naam, naar_naam, nu.strftime("%H:%M"))
 
     van_haltes  = _zoek_haltes_alle(van_naam,  max_total=30)
     naar_haltes = _zoek_haltes_alle(naar_naam, max_total=30)
 
     if not van_haltes:
-        return {"ok": False, "msg": "Geen halte gevonden voor '%s'" % van_naam}
+        return {"ok": False, "msg": "Geen halte gevonden voor '%s'." % van_naam}
     if not naar_haltes:
-        return {"ok": False, "msg": "Geen halte gevonden voor '%s'" % naar_naam}
+        return {"ok": False, "msg": "Geen halte gevonden voor '%s'." % naar_naam}
 
     log.info("  van  (%d): %s", len(van_haltes),  [h.get("omschrijving") for h in van_haltes])
     log.info("  naar (%d): %s", len(naar_haltes), [h.get("omschrijving") for h in naar_haltes])
 
-    # Bouw naar_lijnen: (ent, lijn) -> haltenaam — met twee keys per lijnrichting
+    # Bouw naar_lijnen: (ent, lijn) -> haltenaam
     naar_lijnen: Dict[Tuple, str] = {}
     for nh in naar_haltes:
         ne = str(nh.get("entiteitnummer", ""))
@@ -165,7 +173,7 @@ def vind_route(van_naam: str, naar_naam: str, max_routes: int = 3) -> dict:
     naar_lijn_nrs: Set[str] = set(k[1] for k in naar_lijnen)
     log.info("  Lijnen bij naar: %s", sorted(naar_lijn_nrs))
 
-    # ── Pass 1: lijnrichtingen ────────────────────────────────────────────────
+    # ── Pass 1: lijnrichtingen ────────────────────────────────────────────────────────────────────
     gezien: set = set()
     perron_matches: Dict[Tuple, dict] = {}
     van_met_match:  Set[Tuple] = set()
@@ -191,7 +199,7 @@ def vind_route(van_naam: str, naar_naam: str, max_routes: int = 3) -> dict:
 
     log.info("  Pass 1: %d perrons met match", len(perron_matches))
 
-    # ── Pass 2: realtime scan voor perrons zonder lijnrichtingen-match ─────────
+    # ── Pass 2: realtime scan voor perrons zonder match ─────────────────────────────
     rt_cache: Dict[Tuple, List[dict]] = {}
 
     for vh in van_haltes:
@@ -226,15 +234,17 @@ def vind_route(van_naam: str, naar_naam: str, max_routes: int = 3) -> dict:
             vn = str(vh.get("haltenummer", ""))
             dcs = rt_cache.get((ve, vn)) or _get_realtime(ve, vn)
             if dcs:
-                lines = ["Geen directe lijn van '%s' naar '%s'." % (van_naam, naar_naam),
-                         "Vertrektijden %s:" % vh.get("omschrijving", van_naam)]
+                lines = [
+                    "Geen directe lijn van '%s' naar '%s'." % (van_naam, naar_naam),
+                    "Vertrektijden %s:" % vh.get("omschrijving", van_naam),
+                ]
                 for d in dcs[:4]:
                     lines.append(_fmt_dc(d))
                 return {"ok": False, "msg": "\n".join(lines)}
         return {"ok": False,
                 "msg": "Geen route gevonden van '%s' naar '%s'." % (van_naam, naar_naam)}
 
-    # ── Verzamel vertrekken ───────────────────────────────────────────────────
+    # ── Verzamel en filter vertrekken ───────────────────────────────────────────────────────
     vertrekken: List[Tuple[datetime, str, str]] = []
 
     for (ve, vn), info in perron_matches.items():
@@ -254,11 +264,10 @@ def vind_route(van_naam: str, naar_naam: str, max_routes: int = 3) -> dict:
                 t   = rt or gep
                 if not t:
                     continue
-                tijd = t.strftime("%H:%M")
-                if gep and rt and rt != gep:
-                    diff = int((rt - gep).total_seconds() // 60)
-                    if diff:
-                        tijd += " %+d'" % diff
+                # ── Tijdfilter: enkel vertrekken >= vanaf ──────────────
+                if t < nu:
+                    continue
+                tijd      = _fmt_tijd(gep, rt)
                 regel     = "%s %s lijn %s -> %s" % (tijd, info["van_naam"], lijn, naar_nm)
                 dedup_key = (t.strftime("%Y-%m-%dT%H:%M"), lijn)
                 vertrekken.append((t, dedup_key, regel))
@@ -268,9 +277,10 @@ def vind_route(van_naam: str, naar_naam: str, max_routes: int = 3) -> dict:
         lijn    = next(iter(info["lijnen"]))
         naar_nm = info["lijnen"][lijn]
         return {"ok": True,
-                "msg": "%s -> %s\nLijn %s rijdt hier — geen actuele vertrekken." % (
-                    info["van_naam"], naar_nm, lijn)}
+                "msg": "%s -> %s\nLijn %s rijdt hier — geen vertrekken vanaf %s." % (
+                    info["van_naam"], naar_nm, lijn, nu.strftime("%H:%M"))}
 
+    # ── Sorteren, dedupliceren, top max_routes ──────────────────────────────────────────────
     vertrekken.sort(key=lambda x: x[0])
     seen_dedup: set = set()
     seen_regel: set = set()

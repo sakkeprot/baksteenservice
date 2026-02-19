@@ -37,9 +37,8 @@ _TRAIN_KEYWORDS = re.compile(
 # Tijdstip aan het einde van een bus-commando: 16:30 / 16.30 / 1630 / 16
 _BUS_TIME_RE = re.compile(r"\s+(\d{1,2}[:.](\d{2})|\d{4}|\d{1,2})$")
 
-# "perron" vlak voor het cijfer → geen tijdstip maar perronnummer
+# "perron" vlak voor het cijfer -> geen tijdstip maar perronnummer
 _PERRON_BEFORE_RE = re.compile(r"\bperron\s*$", re.IGNORECASE)
-
 
 
 class SMSAnalyser:
@@ -54,12 +53,10 @@ class SMSAnalyser:
         if not text:
             return {"intent": "unknown", "params": {}, "original": message}
 
-
         lower = text.lower()
         now   = datetime.now()
 
-
-        # ── Vraagwoord + trein-trefwoord → verwijs naar trein-module ──────────
+        # -- Vraagwoord + trein-trefwoord -> verwijs naar trein-module
         if any(lower.startswith(qw) for qw in _QUESTION_WORDS) and _TRAIN_KEYWORDS.search(lower):
             return {
                 "intent": "trein_help",
@@ -67,27 +64,23 @@ class SMSAnalyser:
                 "original": message,
             }
 
-
-        # ── Overige vraagwoorden → GPT ─────────────────────────────────────
+        # -- Overige vraagwoorden -> GPT
         if any(lower.startswith(qw) for qw in _QUESTION_WORDS):
             return {"intent": "gpt", "params": {"prompt": text.strip()}, "original": message}
 
-
-        # ── gpt ───────────────────────────────────────────────────────────
+        # -- gpt
         if lower.startswith("gpt "):
             return {"intent": "gpt", "params": {"prompt": text[4:].strip()}, "original": message}
         if lower.strip() == "gpt":
             return {"intent": "gpt_help", "params": {}, "original": message}
 
-
-        # ── janee ─────────────────────────────────────────────────────────
+        # -- janee
         if lower.startswith("janee "):
             return {"intent": "janee", "params": {"question": text[6:].strip()}, "original": message}
         if lower.strip() == "janee":
             return {"intent": "janee_help", "params": {}, "original": message}
 
-
-        # ── trein ─────────────────────────────────────────────────────────
+        # -- trein
         if lower.startswith("trein "):
             params = self._parse_trein(text[6:].strip(), now)
             if params:
@@ -96,8 +89,7 @@ class SMSAnalyser:
         if lower.strip() == "trein":
             return {"intent": "trein_help", "params": {}, "original": message}
 
-
-        # ── bus ───────────────────────────────────────────────────────────
+        # -- bus
         if lower.startswith("bus "):
             params = self._parse_bus(text[4:].strip(), now)
             if params:
@@ -106,8 +98,7 @@ class SMSAnalyser:
         if lower.strip() == "bus":
             return {"intent": "bus_help", "params": {}, "original": message}
 
-
-        # ── route ─────────────────────────────────────────────────────────
+        # -- route
         if lower.startswith("route "):
             params = self._parse_route(text[6:].strip())
             if params:
@@ -116,20 +107,17 @@ class SMSAnalyser:
         if lower.strip() == "route":
             return {"intent": "route_help", "params": {}, "original": message}
 
-
-        # ── weer ──────────────────────────────────────────────────────────
+        # -- weer
         if lower.startswith("weer "):
             return {"intent": "weer", "params": {"city": text[5:].strip()}, "original": message}
         if lower.strip() == "weer":
             return {"intent": "weer_help", "params": {}, "original": message}
 
-
-        # ── nieuws ────────────────────────────────────────────────────────
+        # -- nieuws
         if lower.strip() == "nieuws":
             return {"intent": "nieuws", "params": {}, "original": message}
 
-
-        # ── vertaling ─────────────────────────────────────────────────────
+        # -- vertaling
         if lower.startswith("vertaling "):
             params = self._parse_vertaling(text[10:].strip())
             if params:
@@ -138,8 +126,7 @@ class SMSAnalyser:
         if lower.strip() == "vertaling":
             return {"intent": "vertaling_help", "params": {}, "original": message}
 
-
-        # ── apotheker / apotheek ──────────────────────────────────────────
+        # -- apotheker / apotheek
         if lower.startswith("apotheker "):
             return {"intent": "apotheker", "params": {"postcode": text[10:].strip()}, "original": message}
         if lower.startswith("apotheek "):
@@ -147,11 +134,10 @@ class SMSAnalyser:
         if lower.strip() in ("apotheker", "apotheek"):
             return {"intent": "apotheker_help", "params": {}, "original": message}
 
-
         return {"intent": "unknown", "params": {}, "original": message}
 
 
-    # ── parsers ───────────────────────────────────────────────────────────────
+    # -- parsers
 
 
     def _parse_vertaling(self, body: str) -> Optional[Dict]:
@@ -191,7 +177,7 @@ class SMSAnalyser:
         if not body:
             return None
 
-        # ── Strip optioneel tijdstip achteraan ─────────────────────────────
+        # Strip optioneel tijdstip achteraan
         # Niet strippen als er "perron" vlak voor staat (bv. "perron 5")
         tijd = None
         m_time = _BUS_TIME_RE.search(body)
@@ -201,11 +187,11 @@ class SMSAnalyser:
                 tijd  = parsed
                 body  = body[:m_time.start()].strip()
 
-        # Geen tijd opgegeven → gebruik now (zelfde gedrag als trein)
+        # Geen tijd opgegeven -> gebruik now (zelfde gedrag als trein)
         if tijd is None:
             tijd = now.replace(second=0, microsecond=0)
 
-        # ── Routeplanning: optioneel "van", verplicht "naar" ──────────────
+        # Routeplanning: optioneel "van", verplicht "naar"
         m = re.match(r'^(?:van\s+)?(.+?)\s+naar\s+(.+)$', body, re.IGNORECASE)
         if m:
             van_part  = m.group(1).strip()
@@ -213,11 +199,11 @@ class SMSAnalyser:
             if van_part and naar_part:
                 return {"van": van_part, "naar": naar_part, "tijd": tijd}
 
-        # ── Haltenummer (4-7 cijfers) ─────────────────────────────────────
+        # Haltenummer (4-7 cijfers)
         if re.fullmatch(r"\d{4,7}", body.strip()):
             return {"halte": body.strip(), "lijn": None}
 
-        # ── Haltenaam + optioneel lijnnummer als laatste token ────────────
+        # Haltenaam + optioneel lijnnummer als laatste token
         parts = body.split()
         lijn  = None
         if (len(parts) >= 2
@@ -254,7 +240,9 @@ class SMSAnalyser:
 
 
     def _parse_trein(self, body, now):
-        words = body.split()
+        # "naar" wordt vaak per ongeluk meegetypt (bv. "trein brussel naar leuven")
+        # -> gewoon negeren, stoort de station-matching niet
+        words = [w for w in body.split() if w.lower() != "naar"]
         departure, dep_end = self._match_station(words, 0)
         if departure is None:
             return None
