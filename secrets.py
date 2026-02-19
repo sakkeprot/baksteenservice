@@ -1,7 +1,5 @@
 """
 baksteenservice - secrets.py
-Store your API keys here. Never commit this file to git!
-Add secrets.py to your .gitignore.
 """
 
 # DeepSeek API key — replace with your real key
