@@ -34,6 +34,13 @@ _TRAIN_KEYWORDS = re.compile(
 )
 
 
+# Tijdstip aan het einde van een bus-commando: 16:30 / 16.30 / 1630 / 16
+_BUS_TIME_RE = re.compile(r"\s+(\d{1,2}[:.](\d{2})|\d{4}|\d{1,2})$")
+
+# "perron" vlak voor het cijfer → geen tijdstip maar perronnummer
+_PERRON_BEFORE_RE = re.compile(r"\bperron\s*$", re.IGNORECASE)
+
+
 
 class SMSAnalyser:
 
@@ -92,7 +99,7 @@ class SMSAnalyser:
 
         # ── bus ───────────────────────────────────────────────────────────
         if lower.startswith("bus "):
-            params = self._parse_bus(text[4:].strip())
+            params = self._parse_bus(text[4:].strip(), now)
             if params:
                 return {"intent": "bus", "params": params, "original": message}
             return {"intent": "bus_help", "params": {"raw": text}, "original": message}
@@ -164,50 +171,86 @@ class SMSAnalyser:
         return {"origin": origin, "destination": destination}
 
 
-    def _parse_bus(self, body: str) -> Optional[Dict]:
+    def _parse_bus(self, body: str, now: datetime) -> Optional[Dict]:
         """
-        Syntaxvarianten (flexibel):
-          bus 202485                       -> haltenummer
-          bus korenmarkt gent              -> haltenaam
-          bus van tienen naar aarschot     -> routeplanning (met "van")
-          bus tienen naar aarschot         -> routeplanning (zonder "van", "naar" detecteert route)
-          bus <haltenaam> <lijnnr>         -> haltenaam + lijnfilter (optioneel)
+        Syntaxvarianten:
+          bus 202485                           -> haltenummer
+          bus korenmarkt gent                  -> haltenaam
+          bus tienen station naar leuven       -> route (zonder "van")
+          bus van tienen station naar leuven   -> route (met "van")
+          bus tienen naar leuven 16:30         -> route + tijdstip
+          bus tienen naar leuven 1630          -> route + tijdstip (HHMM)
+          bus tienen naar leuven 16            -> route + tijdstip (enkel uur)
+          bus tienen perron 5 naar leuven      -> route, perron 5 is geen tijd
+          bus <haltenaam> <lijnnr>             -> haltenaam + lijnfilter
 
         Geeft dict terug met:
-          {"van": ..., "naar": ...}        -> routeplanning
-          {"halte": ..., "lijn": ...}      -> halteopzoeking
+          {"van": ..., "naar": ..., "tijd": datetime}  -> route (tijd = now als niet opgegeven)
+          {"halte": ..., "lijn": ...}                   -> halteopzoeking
         """
         if not body:
             return None
 
-        lower = body.lower()
+        # ── Strip optioneel tijdstip achteraan ─────────────────────────────
+        # Niet strippen als er "perron" vlak voor staat (bv. "perron 5")
+        tijd = None
+        m_time = _BUS_TIME_RE.search(body)
+        if m_time and not _PERRON_BEFORE_RE.search(body[:m_time.start()]):
+            parsed = self._parse_bus_time(m_time.group(1), now)
+            if parsed:
+                tijd  = parsed
+                body  = body[:m_time.start()].strip()
 
-        # Routeplanning: optioneel "van " vooraan, verplicht " naar " ergens
-        m = re.match(
-            r'^(?:van\s+)?(.+?)\s+naar\s+(.+)$',
-            body,
-            re.IGNORECASE,
-        )
+        # Geen tijd opgegeven → gebruik now (zelfde gedrag als trein)
+        if tijd is None:
+            tijd = now.replace(second=0, microsecond=0)
+
+        # ── Routeplanning: optioneel "van", verplicht "naar" ──────────────
+        m = re.match(r'^(?:van\s+)?(.+?)\s+naar\s+(.+)$', body, re.IGNORECASE)
         if m:
             van_part  = m.group(1).strip()
             naar_part = m.group(2).strip()
             if van_part and naar_part:
-                return {"van": van_part, "naar": naar_part}
+                return {"van": van_part, "naar": naar_part, "tijd": tijd}
 
-        # Haltenummer (4-7 cijfers, alleen)
+        # ── Haltenummer (4-7 cijfers) ─────────────────────────────────────
         if re.fullmatch(r"\d{4,7}", body.strip()):
             return {"halte": body.strip(), "lijn": None}
 
-        # Haltenaam + optioneel lijnnummer als laatste token
+        # ── Haltenaam + optioneel lijnnummer als laatste token ────────────
         parts = body.split()
         lijn  = None
-        if len(parts) >= 2 and re.fullmatch(r"[A-Za-z0-9]{1,4}", parts[-1]) and re.search(r"\d", parts[-1]):
+        if (len(parts) >= 2
+                and re.fullmatch(r"[A-Za-z0-9]{1,4}", parts[-1])
+                and re.search(r"\d", parts[-1])):
             lijn  = parts[-1]
             halte = " ".join(parts[:-1])
         else:
             halte = body
 
         return {"halte": halte, "lijn": lijn}
+
+
+    @staticmethod
+    def _parse_bus_time(time_str: str, now: datetime) -> Optional[datetime]:
+        """Converteert HH:MM / HH.MM / HHMM / HH naar datetime."""
+        time_str = time_str.strip()
+        m = re.fullmatch(r"(\d{1,2})[:.](\d{2})", time_str)
+        if m:
+            h, mn = int(m.group(1)), int(m.group(2))
+            if 0 <= h <= 23 and 0 <= mn <= 59:
+                return now.replace(hour=h, minute=mn, second=0, microsecond=0)
+        m = re.fullmatch(r"(\d{2})(\d{2})", time_str)
+        if m:
+            h, mn = int(m.group(1)), int(m.group(2))
+            if 0 <= h <= 23 and 0 <= mn <= 59:
+                return now.replace(hour=h, minute=mn, second=0, microsecond=0)
+        m = re.fullmatch(r"(\d{1,2})", time_str)
+        if m:
+            h = int(m.group(1))
+            if 0 <= h <= 23:
+                return now.replace(hour=h, minute=0, second=0, microsecond=0)
+        return None
 
 
     def _parse_trein(self, body, now):
