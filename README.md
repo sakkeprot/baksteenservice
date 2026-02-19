@@ -3,6 +3,7 @@ Ik zit te veel op mijn smartphone dus ik wou terug naar een baksteen. Een goeie 
 
 simkaart en simlezer zijn onderweg dus het is nog niet live. Als het live wordt zet ik hier het telefoonnummer.
 
+
 ## Commands
 
 | SMS | Voorbeeld | Antwoord |
@@ -18,6 +19,7 @@ simkaart en simlezer zijn onderweg dus het is nog niet live. Als het live wordt 
 
 
 ## Dev mode
+De structuur is alsvolgt: listener.py luistert naar inkomende berichten; analyser.py extraheert de command en variabelen, action.py behandelt de command en doet de nodige bewerkingen achter de schermen (API calls, scraping, vormen van de terug stuur sms), returner.py stuurt de sms terug.
 ```bash
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
