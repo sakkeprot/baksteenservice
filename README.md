@@ -8,10 +8,10 @@ simkaart en simlezer zijn onderweg dus de service is nog niet live. Als het live
 
 | SMS | Voorbeeld | Antwoord |
 |-----|-----------|----------|
-| `gpt <tekst>` | `gpt wat is kwantumverstrengeling` | Max 160 chars |
-| `janee <vraag>` | `janee is kip lekkerder dan rund` | `Ja` / `Nee` |
+| `gpt <tekst>` | `gpt wat is een hond` | Max 160 chars |
+| `janee <vraag>` | `janee is kip lekkerder dan wortel` | `Ja` / `Nee` |
 | `trein <v> <a> [u]` | `trein leuven brussel 17` | Volgende 3 treinen |
-| `route <van> NAAR <naar>` | `route marktplein tienen NAAR leuven station` | Stap-voor-stap |
+| `route <van> NAAR <naar>` | `route leuven station naar vaartkom` | Stap-voor-stap |
 | `weer <stad>` | `weer leuven` | Temp, beschrijving, wind |
 | `nieuws` | `nieuws` | Top 3 VRT NWS koppen |
 | `vertaling <taal> <tekst>` | `vertaling en fiets` | `fiets → bicycle` |
