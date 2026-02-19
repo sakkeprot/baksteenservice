@@ -1,4 +1,7 @@
 # baksteenservice
+Ik zit te veel op mijn smartphone dus ik wou terug naar een baksteen. Een tien jaar geleden leerde ik door mond tot mond reclame de OG baksteenservice kennen. Ik kon treinuren opzoeken, wikipedia raadplegen met mijn oude nokia. Nu blijkt de service niet meer te bestaan dus zet ik het zelf weer op.
+
+simkaart en simlezer zijn onderweg dus het is nog niet live. Als het live wordt zet ik hier het telefoonnummer.
 
 ## Commands
 
