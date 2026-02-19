@@ -13,7 +13,7 @@ import config
 logger = logging.getLogger("baksteenservice.action")
 
 IRAIL_BASE       = "https://api.irail.be"
-IRAIL_USER_AGENT = "baksteenservice/1.0 (github.com/sakke111/baksteenservice)"
+IRAIL_USER_AGENT = "baksteenservice/1.0 (github.com/sakkeprot/baksteenservice)"
 IRAIL_RESULTS    = 6
 
 ORS_BASE    = "https://api.openrouteservice.org"
