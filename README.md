@@ -16,8 +16,8 @@ simkaart en simlezer zijn onderweg dus de service is nog niet live. Als het live
 | `nieuws` | `nieuws` | Top 3 VRT NWS koppen |
 | `vertaling <taal> <tekst>` | `vertaling en fiets` | `fiets → bicycle` |
 | `apotheker <postcode>` | `apotheker 3000` | Wachtapotheek adres + tel |
-| `bus <halte>` | `bus vaartkom leuven` of `bus 202485 ` | Doorkomsten bushalte |
-| `bus <van> NAAR <naar>` | `bus aarschot station naar leuven station` | Vertrektijden volgende 3 bussen |
+| `bus <halte>` | `bus vaartkom leuven` of `bus 202485 ` | Doorkomsten halte |
+| `bus <van> NAAR <naar>` | `bus aarschot station naar leuven station` | Volgende 3 bussen |
 
 
 ## Dev mode
