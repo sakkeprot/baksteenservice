@@ -170,11 +170,12 @@ class ActionHandler:
                     f"Het antwoord mag maximaal {max_len} tekens lang zijn (inclusief spaties). "
                     f"Herhaal de vraag niet, antwoord direct, bondig en correct. "
                     f"Vermeld de tekenlimiet niet."
+                    f"antwoord in de taal van de vraagsteller aub."
                 )},
                 {"role": "user", "content": prompt},
             ])
         reply = r.choices[0].message.content.strip()
-        return {"success": True, "message": _truncate("GPT: " + reply, max_len), "data": {}}
+        return {"success": True, "message": _truncate(reply, max_len), "data": {}}
 
     def _action_gpt_help(self, params):
         return {

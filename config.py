@@ -2,7 +2,7 @@
 
 import re
 
-DEV_MODE = True  # ← False when SIM800C connected
+DEV_MODE = False  # ← False when SIM800C connected
 
 MODEM_PORT = "/dev/ttyUSB0"
 MODEM_BAUD = 9600
