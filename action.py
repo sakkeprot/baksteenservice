@@ -317,27 +317,70 @@ class ActionHandler:
 
     # ── WEER ───────────────────────────────────────────────────────────────────────────────────
 
+    def _resolve_city_id(self, city: str) -> Optional[int]:
+        def _search(query: str):
+            try:
+                r = requests.get(
+                    "http://api.weatherapi.com/v1/search.json", timeout=10,
+                    params={"key": _secrets.OWM_API_KEY, "q": query})
+                r.raise_for_status()
+                return r.json()
+            except requests.RequestException as e:
+                logger.error(f"WeatherAPI search error: {e}")
+                return []
+
+        city_lower = city.strip().lower()
+
+        # 1. First try: plain query
+        results = _search(city)
+        for loc in results:
+            if loc["name"].lower() == city_lower:
+                return loc["id"]
+
+        # 2. Second try: append ",belgie" to force more specific Belgian results
+        results_be = _search(f"{city},belgie")
+        for loc in results_be:
+            if loc["name"].lower() == city_lower:
+                return loc["id"]
+
+        # 3. No exact match anywhere — fall back to first plain result or None
+        return results[0]["id"] if results else None
+
+
     def _action_weer(self, params: Dict) -> Dict:
-        city = params.get("city", "")
+        city = params.get("city", "").strip()
         if not city:
             return {"success": False, "message": "Gebruik: weer <stad>", "data": {}}
+
+        location_id = self._resolve_city_id(city)
+        if location_id is None:
+            return {"success": False, "message": f"Stad '{city}' niet gevonden.", "data": {}}
+
         try:
             r = requests.get(
                 "http://api.weatherapi.com/v1/forecast.json", timeout=10,
-                params={"key": _secrets.OWM_API_KEY, "q": city, "days": 1,
+                params={"key": _secrets.OWM_API_KEY, "q": f"id:{location_id}", "days": 1,
                         "lang": "nl", "aqi": "no", "alerts": "no"})
             r.raise_for_status()
         except requests.RequestException as e:
             return {"success": False, "message": f"Weer fout: {e}", "data": {}}
-        d        = r.json()
-        name     = d["location"]["name"]
-        now_hour = datetime.now().hour
-        hours    = d["forecast"]["forecastday"][0]["hour"]
-        upcoming = [h for h in hours
+
+        d         = r.json()
+        name      = d["location"]["name"]
+        day       = d["forecast"]["forecastday"][0]["day"]
+        min_c     = round(day["mintemp_c"])
+        max_c     = round(day["maxtemp_c"])
+        now_hour  = datetime.now().hour
+        hours     = d["forecast"]["forecastday"][0]["hour"]
+        upcoming  = [h for h in hours
                     if int(h["time"].split(" ")[1].split(":")[0]) >= now_hour][:4]
         if not upcoming:
             return {"success": False, "message": "Geen uurlijkse data beschikbaar.", "data": {}}
-        lines = [name]
+
+        lines = [
+            name,
+            f"Vandaag minimum: {min_c}°C en maximum: {max_c}°C",
+        ]
         for h in upcoming:
             t    = h["time"].split(" ")[1][:5]
             temp = round(h["temp_c"])
@@ -345,8 +388,10 @@ class ActionHandler:
             wind = round(h["wind_kph"])
             rain = h.get("chance_of_rain", 0)
             lines.append(f"{t} {temp}°C {desc}, wind: {wind}km/h, regen: {rain}%")
+
         max_len = config.sms_max("weer")
         return {"success": True, "message": _truncate("\n".join(lines), max_len), "data": {}}
+
 
     def _action_weer_help(self, params):
         return {
