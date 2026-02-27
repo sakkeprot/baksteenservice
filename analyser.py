@@ -1,27 +1,34 @@
 """baksteenservice - analyser.py"""
 
+
 import logging, re
 from datetime import datetime
 from typing import Dict, Optional
 
+
 from stations import load_stations
 from normalise import normalise
 
+
 logger = logging.getLogger("baksteenservice.analyser")
+
 
 _QUESTION_WORDS = {
     "hoe ", "hoeveel ", "wat ", "waarom ", "wanneer ",
     "wie ", "waar ", "welke ", "welk ",
 }
 
+
 _TRAIN_KEYWORDS = re.compile(
     r"\b(trein|treinen|ic|intercity|spoor|nmbs|sncb|perron|station)\b",
     re.IGNORECASE,
 )
 
+
 _TIME_RE = re.compile(r"\s+(\d{1,2}[:.u](\d{2})|\d{4}|\d{1,2})$")
 _PERRON_BEFORE_RE = re.compile(r"\bperron\s*$", re.IGNORECASE)
 _SEP_RE = re.compile(r"\s+(?:naar|vers|to)\s+", re.IGNORECASE)
+
 
 # trigger -> (gmaps_mode, transit_modes, max_routes, location_suffix, language)
 _ROUTE_TRIGGERS = {
@@ -35,8 +42,11 @@ _ROUTE_TRIGGERS = {
     "stib":     ("transit", "bus|subway|tram",       3, " bruxelles",  "fr"),
 }
 
-# All bare trigger words that should return help
-_BARE_TRIGGERS = set(_ROUTE_TRIGGERS.keys())
+_BARE_TRIGGERS   = set(_ROUTE_TRIGGERS.keys())
+_FRENCH_TRIGGERS = {"route f", "pied", "bus f", "stib"}
+_NL_GREET        = {"help", "hallo", "hey"}
+_FR_GREET        = {"aide", "bonjour", "fr"}
+
 
 
 class SMSAnalyser:
@@ -52,6 +62,12 @@ class SMSAnalyser:
         lower = text.lower()
         now   = datetime.now()
 
+        # ── Begroeting / help ──────────────────────────────────────────────
+        if lower.strip() in _NL_GREET:
+            return {"intent": "hallo_nl", "params": {}, "original": message}
+        if lower.strip() in _FR_GREET:
+            return {"intent": "hallo_fr", "params": {}, "original": message}
+
         # ── Vraagwoord + trein -> trein_help ───────────────────────────────
         if any(lower.startswith(qw) for qw in _QUESTION_WORDS) and _TRAIN_KEYWORDS.search(lower):
             return {"intent": "trein_help", "params": {"hint": text}, "original": message}
@@ -66,12 +82,6 @@ class SMSAnalyser:
         if lower.strip() == "gpt":
             return {"intent": "gpt_help", "params": {}, "original": message}
 
-        # ── JANEE ──────────────────────────────────────────────────────────
-        if lower.startswith("janee "):
-            return {"intent": "janee", "params": {"question": text[6:].strip()}, "original": message}
-        if lower.strip() == "janee":
-            return {"intent": "janee_help", "params": {}, "original": message}
-
         # ── TREIN (iRail) ──────────────────────────────────────────────────
         if lower.startswith("trein "):
             params = self._parse_trein(text[6:].strip(), now)
@@ -83,7 +93,8 @@ class SMSAnalyser:
 
         # ── Bare route trigger (no body) -> help ───────────────────────────
         if lower.strip() in _BARE_TRIGGERS:
-            return {"intent": "route_help", "params": {}, "original": message}
+            lang = "fr" if lower.strip() in _FRENCH_TRIGGERS else "nl"
+            return {"intent": "route_help", "params": {"language": lang}, "original": message}
 
         # ── ROUTE-COMMANDO'S (Google Maps) ─────────────────────────────────
         route_params = self._parse_route_command(lower, text, now)
@@ -95,6 +106,12 @@ class SMSAnalyser:
             return {"intent": "weer", "params": {"city": text[5:].strip()}, "original": message}
         if lower.strip() == "weer":
             return {"intent": "weer_help", "params": {}, "original": message}
+
+        # ── METEO (FR) ─────────────────────────────────────────────────────
+        if lower.startswith("meteo "):
+            return {"intent": "meteo", "params": {"city": text[6:].strip()}, "original": message}
+        if lower.strip() == "meteo":
+            return {"intent": "weer_help", "params": {"language": "fr"}, "original": message}
 
         # ── NIEUWS ─────────────────────────────────────────────────────────
         if lower.strip() == "nieuws":
@@ -109,6 +126,15 @@ class SMSAnalyser:
         if lower.strip() == "vertaling":
             return {"intent": "vertaling_help", "params": {}, "original": message}
 
+        # ── TRADUIRE (FR alias voor vertaling) ────────────────────────────
+        if lower.startswith("traduire "):
+            params = self._parse_vertaling(text[9:].strip())
+            if params:
+                return {"intent": "vertaling", "params": params, "original": message}
+            return {"intent": "vertaling_help", "params": {"language": "fr"}, "original": message}
+        if lower.strip() == "traduire":
+            return {"intent": "vertaling_help", "params": {"language": "fr"}, "original": message}
+
         # ── APOTHEKER ──────────────────────────────────────────────────────
         if lower.startswith("apotheker "):
             return {"intent": "apotheker", "params": {"postcode": text[10:].strip()}, "original": message}
@@ -120,13 +146,13 @@ class SMSAnalyser:
         return {"intent": "unknown", "params": {}, "original": message}
 
 
+
     # ── Route parser ───────────────────────────────────────────────────────
 
     def _parse_route_command(self, lower: str, original: str, now: datetime) -> Optional[Dict]:
         matched = None
         body_original = None
 
-        # Longest trigger first so "bus f" beats "bus", "route f" beats "route"
         for trigger in sorted(_ROUTE_TRIGGERS, key=len, reverse=True):
             prefix = trigger + " "
             if lower.startswith(prefix):
@@ -136,15 +162,11 @@ class SMSAnalyser:
 
         if matched is None:
             return None
-
-        # Body is empty after stripping -> should have been caught by bare-trigger
-        # check above, but guard here too
         if not body_original:
             return None
 
         gmaps_mode, transit_modes, max_routes, loc_suffix, language = matched
 
-        # Strip tijdstip achteraan
         tijd = None
         body_work = body_original
         m_time = _TIME_RE.search(body_work)
@@ -157,13 +179,11 @@ class SMSAnalyser:
         if tijd is None:
             tijd = now.replace(second=0, microsecond=0)
 
-        # Splits origin/destination
         sep_match = _SEP_RE.search(body_work)
         if sep_match:
             origin      = body_work[:sep_match.start()].strip()
             destination = body_work[sep_match.end():].strip()
         else:
-            # Geen scheidingswoord: alleen splitsen als exact 2 woorden
             words = body_work.split()
             if len(words) == 2:
                 origin, destination = words[0], words[1]
@@ -186,6 +206,7 @@ class SMSAnalyser:
             "tijd":          tijd,
             "language":      language,
         }
+
 
 
     # ── Tijd parser ────────────────────────────────────────────────────────
@@ -211,6 +232,7 @@ class SMSAnalyser:
         return None
 
 
+
     # ── Vertaling parser ───────────────────────────────────────────────────
 
     def _parse_vertaling(self, body: str) -> Optional[Dict]:
@@ -220,7 +242,8 @@ class SMSAnalyser:
         return {"lang": parts[0].lower(), "text": parts[1]}
 
 
-    # ── Trein parsers (ongewijzigd) ────────────────────────────────────────
+
+    # ── Trein parsers ──────────────────────────────────────────────────────
 
     def _parse_trein(self, body, now):
         words = [w for w in body.split() if w.lower() != "naar"]

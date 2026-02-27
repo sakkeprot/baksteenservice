@@ -1,35 +1,45 @@
 """baksteenservice - action.py"""
 
+
 import html, logging, re, xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Dict, List, Optional
+
 
 import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
+
 import secrets as _secrets
 import config
 import route as _route
 
+
 logger = logging.getLogger("baksteenservice.action")
+
 
 IRAIL_BASE       = "https://api.irail.be"
 IRAIL_USER_AGENT = "baksteenservice/1.0 (github.com/sakkeprot/baksteenservice)"
 IRAIL_RESULTS    = 6
+
 
 NEWS_FEEDS = [
     "https://www.vrt.be/vrtnws/nl.rss.articles.xml",
     "https://www.demorgen.be/rss.xml",
 ]
 
+
 _SKIP_TEXT = {"cookie", "essentieel", "verplicht", "privac", "javascript",
-              "openingsuren", "meer info", "toon", "©", "zoek"}
+              "openingsuren", "meer info", "toon", "\u00a9", "zoek"}
+
 
 _ADDRESS_RE = re.compile(r'.+\d+.*\d{4}\s+\w+', re.IGNORECASE)
 
 
+
 # ── Hulpfuncties ───────────────────────────────────────────────────────────────
+
 
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
@@ -41,12 +51,11 @@ def _ts(unix, delay_sec=0) -> str:
     t = datetime.fromtimestamp(int(unix)).strftime("%H:%M")
     d = int(delay_sec)
     if d > 0:
-        t += f" +{d//60}'"
+        t += f" +{d//60}\'"
     return t
 
 
 def _plat(leg: dict) -> str:
-    """Geeft ' spoor X' terug als platforminfo beschikbaar is."""
     name = leg.get("platforminfo", {}).get("name", "").strip()
     return f" spoor {name}" if name else ""
 
@@ -95,7 +104,9 @@ def _classify_pharmacy_texts(texts: List[str]):
     return name, address, phone
 
 
+
 # ── ActionHandler ──────────────────────────────────────────────────────────────
+
 
 class ActionHandler:
 
@@ -103,13 +114,14 @@ class ActionHandler:
         self.ACTION_MAP = {
             "gpt":            self._action_gpt,
             "gpt_help":       self._action_gpt_help,
-            "janee":          self._action_janee,
-            "janee_help":     self._action_janee_help,
+            "hallo_nl":       self._action_hallo_nl,
+            "hallo_fr":       self._action_hallo_fr,
             "trein":          self._action_trein,
             "trein_help":     self._action_trein_help,
             "route":          self._action_route,
             "route_help":     self._action_route_help,
             "weer":           self._action_weer,
+            "meteo":          self._action_meteo,
             "weer_help":      self._action_weer_help,
             "nieuws":         self._action_nieuws,
             "vertaling":      self._action_vertaling,
@@ -136,7 +148,24 @@ class ActionHandler:
             return {"success": False, "message": f"Fout: {e}", "data": {}}
 
 
+
+    # ── HALLO ─────────────────────────────────────────────────────────────────
+
+
+    def _action_hallo_nl(self, params):
+        return {"success": True, "message": (
+            "Hallo, gebruik: route, weer, gpt, trein, wandel, bus, mivb, nieuws, vertaling, ou envoie bonjour pour l'aide en francais"
+        ), "data": {}}
+
+    def _action_hallo_fr(self, params):
+        return {"success": True, "message": (
+            "Bonjour, envoie: route f, meteo, gpt, pied, train, bus f, stib, traduire"
+        ), "data": {}}
+
+
+
     # ── GPT ───────────────────────────────────────────────────────────────────
+
 
     def _action_gpt(self, params):
         prompt = params.get("prompt", "")
@@ -168,32 +197,9 @@ class ActionHandler:
         ), "data": {}}
 
 
-    # ── JANEE ─────────────────────────────────────────────────────────────────
 
-    def _action_janee(self, params):
-        q = params.get("question", "")
-        if not q:
-            return {"success": False, "message": "Geen vraag ontvangen.", "data": {}}
-        r = self._gpt_client.chat.completions.create(
-            model="deepseek-chat", stream=False,
-            messages=[
-                {"role": "system", "content": "Reply ONLY with 'Ja' or 'Nee'. Nothing else."},
-                {"role": "user",   "content": q},
-            ])
-        raw = r.choices[0].message.content.strip()
-        return {"success": True,
-                "message": "Ja" if raw.lower() in ("ja", "yes", "true", "1", "j") else "Nee",
-                "data": {}}
+    # ── TREIN (via iRail) ─────────────────────────────────────────────────────
 
-    def _action_janee_help(self, params):
-        return {"success": False, "message": (
-            "Gebruik: janee <vraag>\n"
-            "DeepSeek antwoordt alleen met ja of nee.\n"
-            "Voorbeeld: janee is Brussel de hoofdstad van Belgie"
-        ), "data": {}}
-
-
-    # ── TREIN (via iRail, ongewijzigd) ────────────────────────────────────────
 
     def _action_trein(self, params):
         dep      = params.get("departure", "")
@@ -232,7 +238,9 @@ class ActionHandler:
         ), "data": {}}
 
 
+
     # ── ROUTE (Google Maps) ───────────────────────────────────────────────────
+
 
     def _action_route(self, params: Dict) -> Dict:
         origin      = params.get("origin",        "")
@@ -257,22 +265,34 @@ class ActionHandler:
             "data": {},
         }
 
-
     def _action_route_help(self, params):
+        language = params.get("language", "nl")
+        if language == "fr":
+            return {"success": False, "message": (
+                "Envoie: <commande> <de> vers <vers> [temps]\n"
+                "route f\n"
+                "pied\n"
+                "bus f\n"
+                "stib\n"
+                "ex: route f gare louvain vers gare tirlement 17:00\n"
+                "ex: stib gare central vers bruxelles grand place"
+            ), "data": {}}
         return {"success": False, "message": (
             "Gebruik: <commando> <van> naar <naar> [tijd]\n"
-            "route  - alle vervoer (NL)\n"
-            "wandel (NL) | pied (FR)\n"
-            "bus (NL) of bus f (FR)\n"
-            "mivb / stib   - Brussel transit\n"
-            "Vb: route leuven naar tienen 17:00\n"
-            "Vb: stib gare central vers gare midi"
+            "route\n"
+            "wandel\n"
+            "bus\n"
+            "mivb\n"
+            "Vb: route leuven station naar tienen station 17:00\n"
+            "Vb: mivb gare central naar gare midi"
         ), "data": {}}
+
 
 
     # ── WEER ──────────────────────────────────────────────────────────────────
 
-    def _resolve_city_id(self, city: str) -> Optional[int]:
+
+    def _resolve_city_id(self, city: str):
         def _search(query: str):
             try:
                 r = requests.get(
@@ -294,21 +314,21 @@ class ActionHandler:
                 return loc["id"]
         return results[0]["id"] if results else None
 
-    def _action_weer(self, params: Dict) -> Dict:
-        city = params.get("city", "").strip()
-        if not city:
-            return {"success": False, "message": "Gebruik: weer <stad>", "data": {}}
+    def _fetch_weather(self, city: str, language: str) -> Dict:
+        """Shared weather fetch; language controls response labels."""
         location_id = self._resolve_city_id(city)
         if location_id is None:
-            return {"success": False, "message": f"Stad '{city}' niet gevonden.", "data": {}}
+            msg = f"Ville '{city}' introuvable." if language == "fr" else f"Stad '{city}' niet gevonden."
+            return {"success": False, "message": msg, "data": {}}
         try:
             r = requests.get(
                 "http://api.weatherapi.com/v1/forecast.json", timeout=10,
                 params={"key": _secrets.OWM_API_KEY, "q": f"id:{location_id}", "days": 1,
-                        "lang": "nl", "aqi": "no", "alerts": "no"})
+                        "lang": language, "aqi": "no", "alerts": "no"})
             r.raise_for_status()
         except requests.RequestException as e:
-            return {"success": False, "message": f"Weer fout: {e}", "data": {}}
+            msg = f"M\u00e9t\u00e9o erreur: {e}" if language == "fr" else f"Weer fout: {e}"
+            return {"success": False, "message": msg, "data": {}}
         d        = r.json()
         name     = d["location"]["name"]
         day      = d["forecast"]["forecastday"][0]["day"]
@@ -319,20 +339,50 @@ class ActionHandler:
         upcoming = [h for h in hours
                     if int(h["time"].split(" ")[1].split(":")[0]) >= now_hour][:4]
         if not upcoming:
-            return {"success": False, "message": "Geen uurlijkse data beschikbaar.", "data": {}}
-        lines = [name, f"Vandaag min: {min_c}C max: {max_c}C"]
-        for h in upcoming:
-            t    = h["time"].split(" ")[1][:5]
-            temp = round(h["temp_c"])
-            desc = h["condition"]["text"]
-            wind = round(h["wind_kph"])
-            rain = h.get("chance_of_rain", 0)
-            lines.append(f"{t} {temp}C {desc}, wind: {wind}km/h, regen: {rain}%")
+            msg = "Pas de donn\u00e9es horaires disponibles." if language == "fr" else "Geen uurlijkse data beschikbaar."
+            return {"success": False, "message": msg, "data": {}}
+        if language == "fr":
+            lines = [name, f"Auj. min: {min_c}C max: {max_c}C"]
+            for h in upcoming:
+                t    = h["time"].split(" ")[1][:5]
+                temp = round(h["temp_c"])
+                desc = h["condition"]["text"]
+                wind = round(h["wind_kph"])
+                rain = h.get("chance_of_rain", 0)
+                lines.append(f"{t} {temp}C {desc}, vent: {wind}km/h, pluie: {rain}%")
+        else:
+            lines = [name, f"Vandaag min: {min_c}C max: {max_c}C"]
+            for h in upcoming:
+                t    = h["time"].split(" ")[1][:5]
+                temp = round(h["temp_c"])
+                desc = h["condition"]["text"]
+                wind = round(h["wind_kph"])
+                rain = h.get("chance_of_rain", 0)
+                lines.append(f"{t} {temp}C {desc}, wind: {wind}km/h, regen: {rain}%")
         return {"success": True,
                 "message": _truncate("\n".join(lines), config.sms_max("weer")),
                 "data": {}}
 
+    def _action_weer(self, params: Dict) -> Dict:
+        city = params.get("city", "").strip()
+        if not city:
+            return {"success": False, "message": "Gebruik: weer <stad>", "data": {}}
+        return self._fetch_weather(city, "nl")
+
+    def _action_meteo(self, params: Dict) -> Dict:
+        city = params.get("city", "").strip()
+        if not city:
+            return {"success": False, "message": "Utilisation: meteo <ville>", "data": {}}
+        return self._fetch_weather(city, "fr")
+
     def _action_weer_help(self, params):
+        language = params.get("language", "nl")
+        if language == "fr":
+            return {"success": False, "message": (
+                "Utilisation: meteo <ville>\n"
+                "Donne les pr\u00e9visions pour les prochaines heures.\n"
+                "Exemple: meteo liege"
+            ), "data": {}}
         return {"success": False, "message": (
             "Gebruik: weer <stad>\n"
             "Geeft weersvoorspelling voor de komende uren.\n"
@@ -340,7 +390,9 @@ class ActionHandler:
         ), "data": {}}
 
 
+
     # ── NIEUWS ────────────────────────────────────────────────────────────────
+
 
     def _action_nieuws(self, params: Dict) -> Dict:
         max_len = config.sms_max("nieuws")
@@ -366,7 +418,9 @@ class ActionHandler:
         return {"success": False, "message": "Nieuws tijdelijk niet beschikbaar.", "data": {}}
 
 
+
     # ── VERTALING ─────────────────────────────────────────────────────────────
+
 
     def _action_vertaling(self, params: Dict) -> Dict:
         lang = params.get("lang", "en")
@@ -391,6 +445,13 @@ class ActionHandler:
                 "data": {}}
 
     def _action_vertaling_help(self, params):
+        language = params.get("language", "nl")
+        if language == "fr":
+            return {"success": False, "message": (
+                "Utilisation: traduire <langue> <texte>\n"
+                "Codes: en fr de es nl it pt pl tr ar zh ru\n"
+                "Exemple: traduire en velo"
+            ), "data": {}}
         return {"success": False, "message": (
             "Gebruik: vertaling <taal> <tekst>\n"
             "Taalcodes: en fr de es nl it pt pl tr ar zh ru\n"
@@ -398,7 +459,9 @@ class ActionHandler:
         ), "data": {}}
 
 
+
     # ── APOTHEKER ─────────────────────────────────────────────────────────────
+
 
     def _action_apotheker(self, params: Dict) -> Dict:
         import json
@@ -452,7 +515,8 @@ class ActionHandler:
         ), "data": {}}
 
 
+
     def _action_unknown(self, params):
         return {"success": False,
-                "message": "Onbekend commando. Gebruik:  route, trein, wandel / pied, bus, mivb / stib, weer, apotheek, gpt, janee, nieuws, vertaling",
+                "message": "Hallo. Gebruik: route, trein, wandel, bus, mivb, weer, apotheker, gpt, nieuws, vertaling , ou envoie bonjour pour l'aide en francais",
                 "data": {}}

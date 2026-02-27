@@ -5,31 +5,38 @@ Modi: "transit", "walking"
 Returnt {"ok": bool, "msg": str}
 """
 
+
 import logging
 import re
 import requests
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+
 import secrets as _secrets
 
+
 log = logging.getLogger("baksteenservice.route")
+
 
 _DIRECTIONS = "https://maps.googleapis.com/maps/api/directions/json"
 _GEOCODE    = "https://maps.googleapis.com/maps/api/geocode/json"
 _IRAIL      = "https://api.irail.be"
 _IRAIL_UA   = "baksteenservice/1.0 (github.com/sakkeprot/baksteenservice)"
 
+
 _TRAIN_VEHICLES = {"HEAVY_RAIL", "COMMUTER_TRAIN", "RAIL"}
 
-# Platform extractie uit stopnaam (Google encodeert het soms hierin)
+
 _PLATFORM_IN_NAME_RE = re.compile(
-    r'\s*[-–]?\s*(?:perron|spoor|quai|voie|platform|track|gleis|binario)\s*([A-Za-z0-9]+)\s*$',
+    r'\s*[-\u2013]?\s*(?:perron|spoor|quai|voie|platform|track|gleis|binario)\s*([A-Za-z0-9]+)\s*$',
     re.IGNORECASE,
 )
 
 
+
 # ── Lage-level ─────────────────────────────────────────────────────────────────
+
 
 def _api_get(url: str, params: dict) -> Optional[dict]:
     try:
@@ -46,7 +53,9 @@ def _api_get(url: str, params: dict) -> Optional[dict]:
         return None
 
 
+
 # ── Geocoding ──────────────────────────────────────────────────────────────────
+
 
 def _geocode(query: str, language: str = "nl") -> Optional[str]:
     data = _api_get(_GEOCODE, {
@@ -64,7 +73,9 @@ def _geocode(query: str, language: str = "nl") -> Optional[str]:
     return f"{loc['lat']},{loc['lng']}"
 
 
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _fmt_duration(seconds: int) -> str:
     m = seconds // 60
@@ -85,9 +96,8 @@ def _split_stop_name(name: str) -> tuple:
     if m:
         clean    = name[:m.start()].strip()
         platform = m.group(1)
-        return clean, platform   # just the number/letter, no "spoor" prefix
+        return clean, platform
     return name, ""
-
 
 
 def _fmt_platform(stop: dict, transit_details: dict = None, is_departure: bool = True) -> str:
@@ -97,40 +107,31 @@ def _fmt_platform(stop: dict, transit_details: dict = None, is_departure: bool =
     return str(platform) if platform else ""
 
 
+
 # ── iRail platform lookup ──────────────────────────────────────────────────────
+
 
 _STATION_NOISE_RE = re.compile(
     r'\b(station|gare|stazione|bahnhof|halt)\b\s*',
     re.IGNORECASE,
 )
 
+
 def _clean_station_name(name: str) -> str:
-    """
-    Verwijdert 'Station', 'Gare' etc. uit een Google stopnaam
-    zodat iRail het herkent.
-    Bv. "Station Tienen" -> "Tienen"
-         "Gare de Liège" -> "Liège"
-         "Landen"        -> "Landen"
-    """
-    cleaned = _STATION_NOISE_RE.sub("", name).strip(" -–,")
+    cleaned = _STATION_NOISE_RE.sub("", name).strip(" -\u2013,")
     return cleaned if cleaned else name
 
 
 def _irail_platforms(dep_station: str, arr_station: str, dep_unix: int) -> tuple:
-    """
-    Zoekt vertrek- en aankomstperron op via iRail voor een specifieke treinrit.
-    Matcht op vertrektijd (binnen 2 minuten marge).
-    Returns (dep_platform, arr_platform) als strings, of ("", "") bij mislukking.
-    """
-    dep_dt      = datetime.fromtimestamp(dep_unix)
-    dep_clean   = _clean_station_name(dep_station)
-    arr_clean   = _clean_station_name(arr_station)
+    dep_dt    = datetime.fromtimestamp(dep_unix)
+    dep_clean = _clean_station_name(dep_station)
+    arr_clean = _clean_station_name(arr_station)
 
     log.info("  iRail lookup: '%s' -> '%s' om %s", dep_clean, arr_clean, dep_dt.strftime("%H:%M"))
 
     try:
         resp = requests.get(
-            f"{_IRAIL}/connections/",          # geen /v1/, wel trailing slash
+            f"{_IRAIL}/connections/",
             headers={"User-Agent": _IRAIL_UA},
             params={
                 "from":            dep_clean,
@@ -156,8 +157,8 @@ def _irail_platforms(dep_station: str, arr_station: str, dep_unix: int) -> tuple
         return "", ""
 
     for conn in conns:
-        dep      = conn.get("departure", {})
-        arr      = conn.get("arrival",   {})
+        dep       = conn.get("departure", {})
+        arr       = conn.get("arrival",   {})
         conn_unix = int(dep.get("time", 0))
         if abs(conn_unix - dep_unix) <= 120:
             dep_plat = dep.get("platforminfo", {}).get("name", "").strip()
@@ -172,11 +173,14 @@ def _irail_platforms(dep_station: str, arr_station: str, dep_unix: int) -> tuple
 
 # ── Transit formatter ──────────────────────────────────────────────────────────
 
+
 def _fmt_transit_route(route: dict, language: str = "nl") -> str:
     leg   = route["legs"][0]
     parts = []
 
-    walk_label = "te voet" if language == "nl" else "a pied"
+    walk_label  = "te voet" if language == "nl" else "a pied"
+    plat_prefix = "sp." if language == "nl" else "per."
+    stop_word   = "haltes" if language == "nl" else "arr\u00eats"
 
     for step in leg.get("steps", []):
         mode = step.get("travel_mode", "")
@@ -188,14 +192,13 @@ def _fmt_transit_route(route: dict, language: str = "nl") -> str:
             continue
 
         if mode == "TRANSIT":
-            td        = step.get("transit_details", {})
-            dep_stop  = td.get("departure_stop", {})
-            arr_stop  = td.get("arrival_stop",   {})
+            td       = step.get("transit_details", {})
+            dep_stop = td.get("departure_stop", {})
+            arr_stop = td.get("arrival_stop",   {})
 
             dep_name, dep_plat = _split_stop_name(dep_stop.get("name", "?"))
             arr_name, arr_plat = _split_stop_name(arr_stop.get("name", "?"))
 
-            # Fallback naar aparte platform-velden
             if not dep_plat:
                 dep_plat = _fmt_platform(dep_stop, td, is_departure=True)
             if not arr_plat:
@@ -203,7 +206,7 @@ def _fmt_transit_route(route: dict, language: str = "nl") -> str:
 
             dep_time_text = td.get("departure_time", {}).get("text", "?")
             arr_time_text = td.get("arrival_time",   {}).get("text", "?")
-            dep_unix      = td.get("departure_time", {}).get("value")  # Unix timestamp
+            dep_unix      = td.get("departure_time", {}).get("value")
             arr_unix      = td.get("arrival_time",   {}).get("value")
 
             line      = td.get("line", {})
@@ -211,7 +214,6 @@ def _fmt_transit_route(route: dict, language: str = "nl") -> str:
             vehicle   = line.get("vehicle", {}).get("type", "BUS")
             num_stops = td.get("num_stops", "")
 
-            # iRail platform enrichment voor treinen
             if vehicle in _TRAIN_VEHICLES and dep_unix and not dep_plat and not arr_plat:
                 irail_dep_plat, irail_arr_plat = _irail_platforms(
                     dep_name, arr_name, dep_unix
@@ -246,9 +248,9 @@ def _fmt_transit_route(route: dict, language: str = "nl") -> str:
                     "FUNICULAR":      "",
                 }.get(vehicle, "bus")
 
-            dep_plat_str = f" sp.{dep_plat}" if dep_plat else ""
-            arr_plat_str = f" sp.{arr_plat}" if arr_plat else ""
-            stop_info    = f" ({num_stops} haltes)" if num_stops else ""
+            dep_plat_str = f" {plat_prefix}{dep_plat}" if dep_plat else ""
+            arr_plat_str = f" {plat_prefix}{arr_plat}" if arr_plat else ""
+            stop_info    = f" ({num_stops} {stop_word})" if num_stops else ""
 
             parts.append(
                 f"{dep_time_text} {dep_name}{dep_plat_str} "
@@ -263,10 +265,12 @@ def _fmt_transit_route(route: dict, language: str = "nl") -> str:
         return f"{dep} -> {arr} ({_fmt_duration(dur)})"
 
     dur = leg.get("duration", {}).get("value", 0)
-    return " | ".join(parts) + f" ({_fmt_duration(dur)})"
+    return "\n".join(parts) + f"\n({_fmt_duration(dur)})"
+
 
 
 # ── Walking formatter ──────────────────────────────────────────────────────────
+
 
 def _fmt_walking_route(route: dict, language: str = "nl") -> str:
     leg   = route["legs"][0]
@@ -284,10 +288,12 @@ def _fmt_walking_route(route: dict, language: str = "nl") -> str:
     summary = f"{_fmt_distance(dist)}, {_fmt_duration(dur)}"
     if not parts:
         return summary
-    return ", ".join(parts) + f" -- {summary}"
+    return "\n".join(parts) + f"\n{summary}"
+
 
 
 # ── Publieke functie ───────────────────────────────────────────────────────────
+
 
 def vind_route(
     origin:        str,
@@ -344,4 +350,4 @@ def vind_route(
     else:
         regels = [_fmt_walking_route(routes[0], language)]
 
-    return {"ok": True, "msg": "\n".join(regels)}
+    return {"ok": True, "msg": "\n---\n".join(regels)}
