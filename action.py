@@ -10,21 +10,13 @@ from openai import OpenAI
 
 import secrets as _secrets
 import config
-import bus as _bus
+import route as _route
 
 logger = logging.getLogger("baksteenservice.action")
 
 IRAIL_BASE       = "https://api.irail.be"
 IRAIL_USER_AGENT = "baksteenservice/1.0 (github.com/sakkeprot/baksteenservice)"
 IRAIL_RESULTS    = 6
-
-ORS_BASE    = "https://api.openrouteservice.org"
-ORS_HEADERS = {
-    "Authorization": _secrets.ORS_API_KEY,   # bare key, no "Bearer" prefix
-    "Content-Type":  "application/json",
-    "User-Agent":    IRAIL_USER_AGENT,
-}
-
 
 NEWS_FEEDS = [
     "https://www.vrt.be/vrtnws/nl.rss.articles.xml",
@@ -36,27 +28,13 @@ _SKIP_TEXT = {"cookie", "essentieel", "verplicht", "privac", "javascript",
 
 _ADDRESS_RE = re.compile(r'.+\d+.*\d{4}\s+\w+', re.IGNORECASE)
 
-_WX_ICON = {
-    "clear sky": "☀️", "few clouds": "🌤", "scattered clouds": "⛅",
-    "broken clouds": "☁️", "overcast clouds": "☁️",
-    "light rain": "🌦", "moderate rain": "🌧", "heavy intensity rain": "🌧",
-    "thunderstorm": "⛈", "snow": "❄️", "mist": "🌫", "fog": "🌫",
-    "drizzle": "🌦", "shower rain": "🌧",
-}
 
-
-# ── hulpfuncties ──────────────────────────────────────────────────────────────────────
+# ── Hulpfuncties ───────────────────────────────────────────────────────────────
 
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
-    return text[:max_len - 1] + "…"
-
-
-def _dist(metres: float) -> str:
-    if metres < 1000:
-        return f"{int(round(metres))}m"
-    return f"{metres/1000:.1f}km".rstrip("0").rstrip(".")
+    return text[:max_len - 1] + "..."
 
 
 def _ts(unix, delay_sec=0) -> str:
@@ -68,8 +46,9 @@ def _ts(unix, delay_sec=0) -> str:
 
 
 def _plat(leg: dict) -> str:
+    """Geeft ' spoor X' terug als platforminfo beschikbaar is."""
     name = leg.get("platforminfo", {}).get("name", "").strip()
-    return f" per.{name}" if name else ""
+    return f" spoor {name}" if name else ""
 
 
 def _fmt_train(conn: dict) -> str:
@@ -85,7 +64,7 @@ def _fmt_train(conn: dict) -> str:
         via_list = [via_list]
     parts = [f"{dep_time} {dep_name}{_plat(dep)}"]
     for via in via_list:
-        v_arr = via["arrival"]; v_dep = via["departure"]
+        v_arr  = via["arrival"]; v_dep = via["departure"]
         v_name = via.get("stationinfo", {}).get("standardname", via.get("station", "?"))
         parts.append(
             f"-> {_ts(v_arr['time'], v_arr.get('delay', 0))} {v_name}{_plat(v_arr)}"
@@ -107,7 +86,7 @@ def _classify_pharmacy_texts(texts: List[str]):
             if not phone:
                 phone = t.replace(" ", "")
             continue
-        if _ADDRESS_RE.match(t) or re.search(r'\d{4}', t):
+        if _ADDRESS_RE.match(t) or re.search(r'\d{4}', t):
             if not address:
                 address = t
             continue
@@ -116,7 +95,7 @@ def _classify_pharmacy_texts(texts: List[str]):
     return name, address, phone
 
 
-# ── ActionHandler ─────────────────────────────────────────────────────────────────────────────
+# ── ActionHandler ──────────────────────────────────────────────────────────────
 
 class ActionHandler:
 
@@ -137,8 +116,6 @@ class ActionHandler:
             "vertaling_help": self._action_vertaling_help,
             "apotheker":      self._action_apotheker,
             "apotheker_help": self._action_apotheker_help,
-            "bus":            self._action_bus,
-            "bus_help":       self._action_bus_help,
             "unknown":        self._action_unknown,
         }
         self._gpt_client = OpenAI(
@@ -158,10 +135,11 @@ class ActionHandler:
             logger.error(f"Action '{intent}' raised: {e}", exc_info=True)
             return {"success": False, "message": f"Fout: {e}", "data": {}}
 
-    # ── GPT ─────────────────────────────────────────────────────────────────────────────────
+
+    # ── GPT ───────────────────────────────────────────────────────────────────
 
     def _action_gpt(self, params):
-        prompt  = params.get("prompt", "")
+        prompt = params.get("prompt", "")
         if not prompt:
             return {"success": False, "message": "Geen prompt ontvangen.", "data": {}}
         max_len = config.sms_max("gpt")
@@ -169,30 +147,28 @@ class ActionHandler:
             model="deepseek-chat", stream=False,
             messages=[
                 {"role": "system", "content": (
-                    f"U bent de assistent van een inwoner van België. "
+                    f"U bent de assistent van een inwoner van Belgie. "
                     f"Uw volledige antwoord wordt als sms bezorgd aan de verzoeker. "
                     f"Het antwoord mag maximaal {max_len} tekens lang zijn (inclusief spaties). "
                     f"Herhaal de vraag niet, antwoord direct, bondig en correct. "
-                    f"Vermeld de tekenlimiet niet."
-                    f"antwoord in de taal van de vraagsteller aub."
+                    f"Vermeld de tekenlimiet niet. "
+                    f"Antwoord in de taal van de vraagsteller."
                 )},
                 {"role": "user", "content": prompt},
             ])
-        reply = r.choices[0].message.content.strip()
-        return {"success": True, "message": _truncate(reply, max_len), "data": {}}
+        return {"success": True,
+                "message": _truncate(r.choices[0].message.content.strip(), max_len),
+                "data": {}}
 
     def _action_gpt_help(self, params):
-        return {
-            "success": False,
-            "message": (
-                "Gebruik: gpt <vraag>\n"
-                "Stel een vraag aan DeepSeek.\n"
-                "Voorbeeld: gpt wat is de hoofdstad van Spanje"
-            ),
-            "data": {},
-        }
+        return {"success": False, "message": (
+            "Gebruik: gpt <vraag>\n"
+            "Stel een vraag aan DeepSeek.\n"
+            "Voorbeeld: gpt wat is de hoofdstad van Spanje"
+        ), "data": {}}
 
-    # ── JANEE ───────────────────────────────────────────────────────────────────────────────
+
+    # ── JANEE ─────────────────────────────────────────────────────────────────
 
     def _action_janee(self, params):
         q = params.get("question", "")
@@ -210,17 +186,14 @@ class ActionHandler:
                 "data": {}}
 
     def _action_janee_help(self, params):
-        return {
-            "success": False,
-            "message": (
-                "Gebruik: janee <vraag>\n"
-                "DeepSeek antwoordt alleen met ja of nee.\n"
-                "Voorbeeld: janee is Brussel de hoofdstad van Belgie"
-            ),
-            "data": {},
-        }
+        return {"success": False, "message": (
+            "Gebruik: janee <vraag>\n"
+            "DeepSeek antwoordt alleen met ja of nee.\n"
+            "Voorbeeld: janee is Brussel de hoofdstad van Belgie"
+        ), "data": {}}
 
-    # ── TREIN ───────────────────────────────────────────────────────────────────────────────
+
+    # ── TREIN (via iRail, ongewijzigd) ────────────────────────────────────────
 
     def _action_trein(self, params):
         dep      = params.get("departure", "")
@@ -244,95 +217,60 @@ class ActionHandler:
         if not conns:
             return {"success": False, "message": f"Geen treinen {dep}->{arr}.", "data": {}}
         max_len = config.sms_max("trein")
-        msg = _truncate("\n".join(_fmt_train(c) for c in conns[:3]), max_len)
-        return {"success": True, "message": msg, "data": {}}
+        return {"success": True,
+                "message": _truncate("\n".join(_fmt_train(c) for c in conns[:3]), max_len),
+                "data": {}}
 
     def _action_trein_help(self, params):
         hint  = params.get("hint", "")
         extra = f"\nJe vroeg: \"{hint}\"" if hint else ""
-        return {
-            "success": False,
-            "message": (
-                "Gebruik: trein <van> <naar> [uur]\n"
-                "Zoek treinuren via iRail.\n"
-                "Voorbeeld: trein gent brussel 14:30\n"
-                "Uur weglaten = vertrekt nu"
-                + extra
-            ),
-            "data": {},
-        }
+        return {"success": False, "message": (
+            "Gebruik: trein <van> <naar> [uur]\n"
+            "Zoek treinuren via iRail.\n"
+            "Voorbeeld: trein gent brussel 14:30\n"
+            "Uur weglaten = vertrekt nu" + extra
+        ), "data": {}}
 
-    # ── ROUTE ───────────────────────────────────────────────────────────────────────────────
+
+    # ── ROUTE (Google Maps) ───────────────────────────────────────────────────
 
     def _action_route(self, params: Dict) -> Dict:
-        origin      = params.get("origin",      "")
-        destination = params.get("destination", "")
-        orig_coords = self._geocode(origin)
-        dest_coords = self._geocode(destination)
-        if orig_coords is None:
-            return {"success": False, "message": f"Adres niet gevonden: {origin}", "data": {}}
-        if dest_coords is None:
-            return {"success": False, "message": f"Adres niet gevonden: {destination}", "data": {}}
+        origin      = params.get("origin",        "")
+        destination = params.get("destination",   "")
+        language    = params.get("language",       "nl")
 
-        profile = config.ROUTE_PROFILE   # must be e.g. "foot-walking" or "cycling-regular"
-        # print(f"DEBUG profile={profile!r}")
-        # print(f"DEBUG auth={ORS_HEADERS.get('Authorization')!r}")
-        try:
-            resp = requests.post(
-                f"{ORS_BASE}/v2/directions/{profile}/json",
-                headers=ORS_HEADERS,
-                timeout=10,
-                json={
-                    "coordinates": [orig_coords, dest_coords],
-                    "language": "nl",
-                    "instructions": True,
-                    "units": "m",
-                }
-            )
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            # Log the full response body so you can see the ORS error code
-            body = getattr(e.response, "text", "")
-            logger.error(f"Route API error: {e} | body: {body}")
-            return {"success": False, "message": f"Route fout: {e}", "data": {}}
+        if not origin or not destination:
+            return self._action_route_help(params)
 
-        steps = resp.json()["routes"][0]["segments"][0]["steps"]
-        parts = [
-            f"{self._compact_instruction(s.get('instruction', ''))} ({_dist(s.get('distance', 0))})"
-            for s in steps if s.get("distance", 0) >= 5
-        ]
-        max_len = config.sms_max("route")
-        return {"success": True, "message": _truncate(", ".join(parts), max_len), "data": {}}
-
-    def _geocode(self, address):
-        try:
-            r = requests.get(
-                f"{ORS_BASE}/geocode/search", headers=ORS_HEADERS, timeout=10,
-                params={"text": address, "boundary.country": "BE", "size": 1, "lang": "nl"})
-            r.raise_for_status()
-            feats = r.json().get("features", [])
-            return feats[0]["geometry"]["coordinates"] if feats else None
-        except requests.RequestException as e:
-            logger.error(f"Geocode error: {e}")
-            return None
-
-    def _compact_instruction(self, instruction):
-        i = re.sub(r"^(Rij|Sla)\s+", "", instruction.strip(), flags=re.IGNORECASE)
-        i = re.sub(r"\s+(af op|op|in)\s+", " ", i, flags=re.IGNORECASE)
-        return i[:1].upper() + i[1:] if i else instruction
-
-    def _action_route_help(self, params):
+        result = _route.vind_route(
+            origin        = origin,
+            destination   = destination,
+            mode          = params.get("mode",          "transit"),
+            transit_modes = params.get("transit_modes", "bus|tram|subway|train"),
+            max_routes    = params.get("max_routes",    3),
+            vanaf         = params.get("tijd",          None),
+            language      = language,
+        )
         return {
-            "success": False,
-            "message": (
-                "Gebruik: route <van> naar <naar>\n"
-                "Geeft stap-voor-stap wandelroute.\n"
-                "Voorbeeld: route station leuven naar vaartkom"
-            ),
+            "success": result["ok"],
+            "message": _truncate(result["msg"], config.sms_max("route")),
             "data": {},
         }
 
-    # ── WEER ───────────────────────────────────────────────────────────────────────────────────
+
+    def _action_route_help(self, params):
+        return {"success": False, "message": (
+            "Gebruik: <commando> <van> naar <naar> [tijd]\n"
+            "route  - alle vervoer (NL)\n"
+            "wandel (NL) | pied (FR)\n"
+            "bus (NL) of bus f (FR)\n"
+            "mivb / stib   - Brussel transit\n"
+            "Vb: route leuven naar tienen 17:00\n"
+            "Vb: stib gare central vers gare midi"
+        ), "data": {}}
+
+
+    # ── WEER ──────────────────────────────────────────────────────────────────
 
     def _resolve_city_id(self, city: str) -> Optional[int]:
         def _search(query: str):
@@ -345,34 +283,24 @@ class ActionHandler:
             except requests.RequestException as e:
                 logger.error(f"WeatherAPI search error: {e}")
                 return []
-
         city_lower = city.strip().lower()
-
-        # 1. First try: plain query
         results = _search(city)
         for loc in results:
             if loc["name"].lower() == city_lower:
                 return loc["id"]
-
-        # 2. Second try: append ",belgie" to force more specific Belgian results
         results_be = _search(f"{city},belgie")
         for loc in results_be:
             if loc["name"].lower() == city_lower:
                 return loc["id"]
-
-        # 3. No exact match anywhere — fall back to first plain result or None
         return results[0]["id"] if results else None
-
 
     def _action_weer(self, params: Dict) -> Dict:
         city = params.get("city", "").strip()
         if not city:
             return {"success": False, "message": "Gebruik: weer <stad>", "data": {}}
-
         location_id = self._resolve_city_id(city)
         if location_id is None:
             return {"success": False, "message": f"Stad '{city}' niet gevonden.", "data": {}}
-
         try:
             r = requests.get(
                 "http://api.weatherapi.com/v1/forecast.json", timeout=10,
@@ -381,47 +309,38 @@ class ActionHandler:
             r.raise_for_status()
         except requests.RequestException as e:
             return {"success": False, "message": f"Weer fout: {e}", "data": {}}
-
-        d         = r.json()
-        name      = d["location"]["name"]
-        day       = d["forecast"]["forecastday"][0]["day"]
-        min_c     = round(day["mintemp_c"])
-        max_c     = round(day["maxtemp_c"])
-        now_hour  = datetime.now().hour
-        hours     = d["forecast"]["forecastday"][0]["hour"]
-        upcoming  = [h for h in hours
+        d        = r.json()
+        name     = d["location"]["name"]
+        day      = d["forecast"]["forecastday"][0]["day"]
+        min_c    = round(day["mintemp_c"])
+        max_c    = round(day["maxtemp_c"])
+        now_hour = datetime.now().hour
+        hours    = d["forecast"]["forecastday"][0]["hour"]
+        upcoming = [h for h in hours
                     if int(h["time"].split(" ")[1].split(":")[0]) >= now_hour][:4]
         if not upcoming:
             return {"success": False, "message": "Geen uurlijkse data beschikbaar.", "data": {}}
-
-        lines = [
-            name,
-            f"Vandaag minimum: {min_c}°C en maximum: {max_c}°C",
-        ]
+        lines = [name, f"Vandaag min: {min_c}C max: {max_c}C"]
         for h in upcoming:
             t    = h["time"].split(" ")[1][:5]
             temp = round(h["temp_c"])
             desc = h["condition"]["text"]
             wind = round(h["wind_kph"])
             rain = h.get("chance_of_rain", 0)
-            lines.append(f"{t} {temp}°C {desc}, wind: {wind}km/h, regen: {rain}%")
-
-        max_len = config.sms_max("weer")
-        return {"success": True, "message": _truncate("\n".join(lines), max_len), "data": {}}
-
+            lines.append(f"{t} {temp}C {desc}, wind: {wind}km/h, regen: {rain}%")
+        return {"success": True,
+                "message": _truncate("\n".join(lines), config.sms_max("weer")),
+                "data": {}}
 
     def _action_weer_help(self, params):
-        return {
-            "success": False,
-            "message": (
-                "Gebruik: weer <stad>\n"
-                "Geeft weersvoorspelling voor de komende uren.\n"
-                "Voorbeeld: weer gent"
-            ),
-            "data": {},
-        }
+        return {"success": False, "message": (
+            "Gebruik: weer <stad>\n"
+            "Geeft weersvoorspelling voor de komende uren.\n"
+            "Voorbeeld: weer gent"
+        ), "data": {}}
 
-    # ── NIEUWS ────────────────────────────────────────────────────────────────────────────────
+
+    # ── NIEUWS ────────────────────────────────────────────────────────────────
 
     def _action_nieuws(self, params: Dict) -> Dict:
         max_len = config.sms_max("nieuws")
@@ -438,16 +357,16 @@ class ActionHandler:
                 for item in items:
                     title = html.unescape(item.findtext("title", "").strip())
                     if len(title) > 100:
-                        title = title[:99] + "\u2026"
+                        title = title[:99] + "..."
                     lines.append(title)
                 msg = "\n".join(f"{i+1}. {t}" for i, t in enumerate(lines))
                 return {"success": True, "message": _truncate(msg, max_len), "data": {}}
             except Exception as e:
                 logger.warning(f"RSS {feed_url} failed: {e}")
-                continue
         return {"success": False, "message": "Nieuws tijdelijk niet beschikbaar.", "data": {}}
 
-    # ── VERTALING ────────────────────────────────────────────────────────────────────────────
+
+    # ── VERTALING ─────────────────────────────────────────────────────────────
 
     def _action_vertaling(self, params: Dict) -> Dict:
         lang = params.get("lang", "en")
@@ -456,8 +375,8 @@ class ActionHandler:
             return {"success": False, "message": "Geen tekst om te vertalen.", "data": {}}
         lang_names = {
             "en": "English", "fr": "French", "de": "German", "es": "Spanish",
-            "nl": "Dutch",   "it": "Italian","pt": "Portuguese","pl": "Polish",
-            "tr": "Turkish", "ar": "Arabic", "zh": "Chinese",  "ru": "Russian",
+            "nl": "Dutch",   "it": "Italian", "pt": "Portuguese", "pl": "Polish",
+            "tr": "Turkish", "ar": "Arabic",  "zh": "Chinese",    "ru": "Russian",
         }
         lang_full = lang_names.get(lang.lower(), lang)
         r = self._gpt_client.chat.completions.create(
@@ -467,24 +386,19 @@ class ActionHandler:
                 {"role": "user",   "content": text},
             ])
         translation = r.choices[0].message.content.strip()
-        max_len     = config.sms_max("vertaling")
         return {"success": True,
-                "message": _truncate(f"{text} \u2192 {translation}", max_len),
+                "message": _truncate(f"{text} -> {translation}", config.sms_max("vertaling")),
                 "data": {}}
 
     def _action_vertaling_help(self, params):
-        return {
-            "success": False,
-            "message": (
-                "Gebruik: vertaling <taal> <tekst>\n"
-                "Vertaalt tekst naar de opgegeven taal.\n"
-                "Taalcodes: en fr de es nl it pt pl tr ar zh ru\n"
-                "Voorbeeld: vertaling en fiets"
-            ),
-            "data": {},
-        }
+        return {"success": False, "message": (
+            "Gebruik: vertaling <taal> <tekst>\n"
+            "Taalcodes: en fr de es nl it pt pl tr ar zh ru\n"
+            "Voorbeeld: vertaling en fiets"
+        ), "data": {}}
 
-    # ── APOTHEKER ───────────────────────────────────────────────────────────────────────────
+
+    # ── APOTHEKER ─────────────────────────────────────────────────────────────
 
     def _action_apotheker(self, params: Dict) -> Dict:
         import json
@@ -531,54 +445,14 @@ class ActionHandler:
                 "data": {}}
 
     def _action_apotheker_help(self, params):
-        return {
-            "success": False,
-            "message": (
-                "Gebruik: apotheker <postcode>\n"
-                "Zoekt de wachtapotheek in jouw buurt.\n"
-                "Voorbeeld: apotheker 9790"
-            ),
-            "data": {},
-        }
+        return {"success": False, "message": (
+            "Gebruik: apotheker <postcode>\n"
+            "Zoekt de wachtapotheek in jouw buurt.\n"
+            "Voorbeeld: apotheker 9790"
+        ), "data": {}}
 
-    # ── BUS ───────────────────────────────────────────────────────────────────────
-
-    def _action_bus(self, params: Dict) -> Dict:
-        max_len = config.sms_max("bus")
-        van  = params.get("van",  "")
-        naar = params.get("naar", "")
-
-        if van and naar:
-            tijd   = params.get("tijd", None)   # datetime of None (= now in bus.py)
-            result = _bus.vind_route(van, naar, max_routes=3, vanaf=tijd)
-        else:
-            halte = params.get("halte", "")
-            if not halte:
-                return {"success": False,
-                        "message": "Gebruik: bus van <halte> naar <halte>", "data": {}}
-            result = _bus.vind_halte(halte)
-
-        return {
-            "success": result["ok"],
-            "message": _truncate(result["msg"], max_len),
-            "data": {},
-        }
-
-    def _action_bus_help(self, params):
-        return {
-            "success": False,
-            "message": (
-                "Gebruik: bus <halte> naar <halte> [tijd]\nof bus <haltenaam> <lijnnr> [tijd]\n"
-                "Voorbeeld: bus van aarschot station naar leuven station 12:00\n"
-                "Geen tijd = nu"
-            ),
-            "data": {},
-        }
-
-    # ── UNKNOWN ─────────────────────────────────────────────────────────────────────────────
 
     def _action_unknown(self, params):
-        cmds = "trein, bus, route, weer, apotheek, gpt, janee, nieuws, vertaling"
         return {"success": False,
-                "message": f"Onbekend commando. Gebruik: {cmds}",
+                "message": "Onbekend commando. Gebruik:  route, trein, wandel / pied, bus, mivb / stib, weer, apotheek, gpt, janee, nieuws, vertaling",
                 "data": {}}
