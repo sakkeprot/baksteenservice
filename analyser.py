@@ -18,16 +18,14 @@ _QUESTION_WORDS = {
     "wie ", "waar ", "welke ", "welk ",
 }
 
-
 _TRAIN_KEYWORDS = re.compile(
     r"\b(trein|treinen|ic|intercity|spoor|nmbs|sncb|perron|station)\b",
     re.IGNORECASE,
 )
 
-
-_TIME_RE = re.compile(r"\s+(\d{1,2}[:.u](\d{2})|\d{4}|\d{1,2})$")
+_TIME_RE          = re.compile(r"\s+(\d{1,2}[:.u](\d{2})|\d{4}|\d{1,2})$")
 _PERRON_BEFORE_RE = re.compile(r"\bperron\s*$", re.IGNORECASE)
-_SEP_RE = re.compile(r"\s+(?:naar|vers|to)\s+", re.IGNORECASE)
+_SEP_RE           = re.compile(r"\s+(?:naar|vers|to)\s+", re.IGNORECASE)
 
 
 # trigger -> (gmaps_mode, transit_modes, max_routes, location_suffix, language)
@@ -48,6 +46,41 @@ _NL_GREET        = {"help", "hallo", "hey"}
 _FR_GREET        = {"aide", "bonjour", "fr"}
 
 
+# ── Command word repair ────────────────────────────────────────────────────────
+# Maps mangled forms (modem drops accented vowels) -> canonical command.
+# Only the first token is rewritten; the rest of the message is left untouched.
+_CMD_ALIASES = {
+    # météo -> meteo  (é dropped -> mto)
+    "mto":       "meteo",
+    "mteo":      "meteo",
+    "mto":       "meteo",
+    # traduire -> traduire  (various truncations)
+    "tradure":   "traduire",
+    "tradue":    "traduire",
+    "tradire":   "traduire",
+    # bonjour -> bonjour
+    "bnjour":    "bonjour",
+    "bonjur":    "bonjour",
+    # aide stays ascii, no issue
+    # pied stays ascii, no issue
+    # route f / bus f / stib / mivb all ASCII, no issue
+}
+
+
+def _repair_command(text: str) -> str:
+    """Rewrite the first word if it is a known mangled command alias."""
+    parts = text.split(None, 1)
+    if not parts:
+        return text
+    first = parts[0].lower()
+    if first in _CMD_ALIASES:
+        rest = (" " + parts[1]) if len(parts) > 1 else ""
+        repaired = _CMD_ALIASES[first] + rest
+        logger.debug("Command repair: '%s' -> '%s'", text, repaired)
+        return repaired
+    return text
+
+
 
 class SMSAnalyser:
 
@@ -55,10 +88,11 @@ class SMSAnalyser:
         self.stations, self._ordered_keys = load_stations()
 
     def analyse(self, message: Dict) -> Dict:
-        text  = message.get("text", "").strip()
-        if not text:
+        raw_text = message.get("text", "").strip()
+        if not raw_text:
             return {"intent": "unknown", "params": {}, "original": message}
 
+        text  = _repair_command(raw_text)
         lower = text.lower()
         now   = datetime.now()
 

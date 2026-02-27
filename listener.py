@@ -1,12 +1,16 @@
 import logging
 import threading
 import time
+import unicodedata
 from typing import Dict, List
+
 
 import config
 from config import ALLOWED_SENDERS, SENDER_PATTERN
 
+
 logger = logging.getLogger("baksteenservice.listener")
+
 
 
 def is_allowed(sender: str) -> bool:
@@ -17,6 +21,15 @@ def is_allowed(sender: str) -> bool:
     return True
 
 
+
+def strip_accents(text: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text)
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+
 def decode_text(text: str) -> str:
     t = text.strip()
     if (
@@ -25,13 +38,15 @@ def decode_text(text: str) -> str:
         and all(c in "0123456789ABCDEFabcdef" for c in t)
     ):
         try:
-            return bytes.fromhex(t).decode("utf-16-be")
+            t = bytes.fromhex(t).decode("utf-16-be")
         except Exception:
             pass
-    return text
+    return strip_accents(t)
+
 
 
 class SMSListener:
+
 
     def __init__(self):
         self.pending: List[Dict] = []
@@ -40,6 +55,7 @@ class SMSListener:
         self.thread = None
         self.ser = None
 
+
     def start(self):
         if config.DEV_MODE:
             logger.info("Listener ready (terminal mode).")
@@ -47,20 +63,18 @@ class SMSListener:
         import serial
         self.ser = serial.Serial(port=config.MODEM_PORT, baudrate=config.MODEM_BAUD, timeout=1)
         time.sleep(1)
-        # Cancel any stuck send from previous run
         self.ser.write(b"\x1b")
         time.sleep(0.3)
         self.ser.reset_input_buffer()
         self.at("AT\r\n")
         self.at("AT+CMGF=1\r\n")
-        # Disable unsolicited delivery — we poll manually instead
         self.at("AT+CNMI=0,0,0,0,0\r\n")
-        # Clear SIM inbox on startup so we start clean
         self.at('AT+CMGDA="DEL ALL"\r\n', wait=2)
         self.active = True
         self.thread = threading.Thread(target=self.poll_loop, daemon=True)
         self.thread.start()
         logger.info(f"Listener started on {config.MODEM_PORT}.")
+
 
     def stop(self):
         self.active = False
@@ -69,21 +83,24 @@ class SMSListener:
         if self.ser and self.ser.isOpen():
             self.ser.close()
 
+
     def get_next_message(self):
         return self.read_from_terminal() if config.DEV_MODE else self.wait_for_modem_message()
+
 
     def read_from_terminal(self):
         try:
             while True:
                 sender = input("Sender (e.g. +32498765432): ").strip() or "+32400000000"
-                text = input("Message: ").strip()
+                text   = input("Message: ").strip()
                 print()
                 if is_allowed(sender):
-                    return {"sender": sender, "text": text, "timestamp": time.time()}
+                    return {"sender": sender, "text": strip_accents(text), "timestamp": time.time()}
                 logger.warning(f"Blocked sender: {sender}")
                 print(f"{sender} is geen geldig +32 nummer. Probeer opnieuw.")
         except (EOFError, KeyboardInterrupt):
             return None
+
 
     def wait_for_modem_message(self):
         while self.active:
@@ -91,15 +108,13 @@ class SMSListener:
                 if self.pending:
                     return self.pending.pop(0)
             time.sleep(0.1)
-        return None  # returns None when stopped → breaks main loop
+        return None
 
 
     def poll_loop(self):
-        """Poll SIM inbox every second. When not sending, check for new messages."""
         while self.active:
             time.sleep(1)
             if self.lock.locked():
-                # A send is in progress — skip this poll cycle, don't touch serial
                 continue
             try:
                 messages = self._read_all_messages()
@@ -110,33 +125,32 @@ class SMSListener:
             except Exception as e:
                 logger.error(f"Poll error: {e}")
 
+
     def _read_all_messages(self) -> List[Dict]:
-        """Read and delete all messages currently stored on SIM."""
         self.ser.reset_input_buffer()
         self.ser.write(b'AT+CMGL="ALL"\r\n')
         time.sleep(1)
         raw = self.ser.read(self.ser.in_waiting).decode("utf-8", errors="ignore")
 
         messages = []
-        indices = []
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        indices  = []
+        lines    = [l.strip() for l in raw.splitlines() if l.strip()]
 
         i = 0
         while i < len(lines):
             line = lines[i]
             if line.startswith("+CMGL:"):
                 try:
-                    # +CMGL: 1,"REC UNREAD","+32471663068",,"26/02/26,18:28:41+04"
-                    parts = line.split(",")
-                    index = int(parts[0].replace("+CMGL:", "").strip())
+                    parts  = line.split(",")
+                    index  = int(parts[0].replace("+CMGL:", "").strip())
                     sender = parts[2].strip().strip('"') if len(parts) >= 3 else None
-                    body = decode_text(lines[i + 1]) if i + 1 < len(lines) else ""
+                    body   = decode_text(lines[i + 1]) if i + 1 < len(lines) else ""
                     if sender and body and body != "OK":
                         indices.append(index)
                         if is_allowed(sender):
                             messages.append({
-                                "sender": sender,
-                                "text": body,
+                                "sender":    sender,
+                                "text":      body,
                                 "timestamp": time.time()
                             })
                         else:
@@ -145,12 +159,12 @@ class SMSListener:
                     logger.warning(f"Could not parse CMGL line: {line} — {e}")
             i += 1
 
-        # Delete all read messages from SIM
         for index in indices:
             self.ser.write(f'AT+CMGD={index}\r\n'.encode())
             time.sleep(0.2)
 
         return messages
+
 
     def at(self, cmd, wait=0.3):
         self.ser.write(cmd.encode())
