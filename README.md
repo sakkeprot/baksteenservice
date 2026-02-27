@@ -1,5 +1,6 @@
 # baksteenservice
 Stuur een SMS naar: **0491 49 91 48**
+
 Ik zit te veel op mijn smartphone dus ik wou terug naar een baksteen. Een goeie tien jaar geleden leerde ik door mond-tot-mondreclame de OG baksteenservice kennen — treinuren opzoeken, Wikipedia raadplegen met een oude Nokia. De service bestaat niet meer, dus zet ik hem zelf weer op.
 
 Stuur een SMS naar: **0491 49 91 48**
