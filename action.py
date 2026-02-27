@@ -19,8 +19,12 @@ IRAIL_USER_AGENT = "baksteenservice/1.0 (github.com/sakkeprot/baksteenservice)"
 IRAIL_RESULTS    = 6
 
 ORS_BASE    = "https://api.openrouteservice.org"
-ORS_HEADERS = {"Authorization": _secrets.ORS_API_KEY, "Content-Type": "application/json",
-               "User-Agent": IRAIL_USER_AGENT}
+ORS_HEADERS = {
+    "Authorization": _secrets.ORS_API_KEY,   # bare key, no "Bearer" prefix
+    "Content-Type":  "application/json",
+    "User-Agent":    IRAIL_USER_AGENT,
+}
+
 
 NEWS_FEEDS = [
     "https://www.vrt.be/vrtnws/nl.rss.articles.xml",
@@ -269,16 +273,29 @@ class ActionHandler:
             return {"success": False, "message": f"Adres niet gevonden: {origin}", "data": {}}
         if dest_coords is None:
             return {"success": False, "message": f"Adres niet gevonden: {destination}", "data": {}}
-        profile = config.ROUTE_PROFILE
+
+        profile = config.ROUTE_PROFILE   # must be e.g. "foot-walking" or "cycling-regular"
+        # print(f"DEBUG profile={profile!r}")
+        # print(f"DEBUG auth={ORS_HEADERS.get('Authorization')!r}")
         try:
             resp = requests.post(
                 f"{ORS_BASE}/v2/directions/{profile}/json",
-                headers=ORS_HEADERS, timeout=10,
-                json={"coordinates": [orig_coords, dest_coords],
-                      "language": "nl", "instructions": True, "units": "m"})
+                headers=ORS_HEADERS,
+                timeout=10,
+                json={
+                    "coordinates": [orig_coords, dest_coords],
+                    "language": "nl",
+                    "instructions": True,
+                    "units": "m",
+                }
+            )
             resp.raise_for_status()
         except requests.RequestException as e:
+            # Log the full response body so you can see the ORS error code
+            body = getattr(e.response, "text", "")
+            logger.error(f"Route API error: {e} | body: {body}")
             return {"success": False, "message": f"Route fout: {e}", "data": {}}
+
         steps = resp.json()["routes"][0]["segments"][0]["steps"]
         parts = [
             f"{self._compact_instruction(s.get('instruction', ''))} ({_dist(s.get('distance', 0))})"
